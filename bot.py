@@ -2,47 +2,52 @@ import os
 import asyncio
 from telegram import Bot
 
-# Canal Telegram
 CHANNEL_ID = "@canalRM24"
-
-# Le token sera ajouté plus tard dans GitHub Secrets
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 
-async def publier_message(texte):
+async def publier_opportunite(titre, categorie, description, lien):
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN n'est pas configuré.")
+
     bot = Bot(token=BOT_TOKEN)
+
+    message = f"""🌍 OPPORTUNITÉ INTERNATIONALE
+
+{categorie}
+
+📌 {titre}
+
+📝 {description}
+
+🔗 Candidature :
+{lien}
+
+📢 Abonne-toi à @canalRM24 pour recevoir les prochaines opportunités.
+"""
+
     await bot.send_message(
         chat_id=CHANNEL_ID,
-        text=texte,
+        text=message,
         disable_web_page_preview=False
     )
 
 
 async def main():
-    if not BOT_TOKEN:
-        print("❌ Le token BOT_TOKEN n'est pas configuré.")
-        return
-
-    bot = Bot(token=BOT_TOKEN)
-
     try:
-        informations = await bot.get_me()
-        print(f"✅ Bot connecté : @{informations.username}")
+        bot = Bot(BOT_TOKEN)
 
-        await publier_message(
-            """🌍 OPPORTUNITÉS INTERNATIONALES
+        me = await bot.get_me()
+        print(f"✅ Bot connecté : @{me.username}")
 
-💼 OFFRES D'EMPLOI
-🧑‍💻 OFFRES DE STAGE
-🎓 BOURSES D'ÉTUDES
-🌎 OPPORTUNITÉS INTERNATIONALES
-
-📢 Restez abonnés à notre canal pour découvrir régulièrement de nouvelles opportunités.
-
-🔗 Canal : @canalRM24"""
+        await publier_opportunite(
+            titre="Exemple d'offre à remplacer",
+            categorie="💼 EMPLOI",
+            description="Cette publication est un test du système de publication automatique.",
+            lien="https://example.com"
         )
 
-        print("✅ Publication envoyée avec succès.")
+        print("✅ Publication de test réussie.")
 
     except Exception as erreur:
         print(f"❌ Erreur : {erreur}")
