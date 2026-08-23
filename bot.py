@@ -11,6 +11,7 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    LabeledPrice,
 )
 
 from telegram.constants import ParseMode
@@ -20,6 +21,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    PreCheckoutQueryHandler,
     ContextTypes,
     filters,
 )
@@ -58,6 +60,9 @@ CHANNEL_USERNAME = os.getenv(
     "CHANNEL_USERNAME",
     "canalRM24"
 ).strip().lstrip("@")
+
+# Prix de la candidature
+CANDIDATURE_STARS = 100
 
 
 # ============================================================
@@ -107,7 +112,7 @@ def run_flask():
             threaded=True,
         )
     except Exception:
-        logger.exception("Flask")
+        logger.exception("Erreur Flask")
 
 
 # ============================================================
@@ -198,6 +203,27 @@ def ajouter_offre(
         return offre_id
 
 
+def offre_par_id(offre_id):
+
+    with db_lock:
+
+        conn = get_db()
+
+        resultat = conn.execute(
+            """
+            SELECT *
+            FROM offres
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (offre_id,),
+        ).fetchone()
+
+        conn.close()
+
+        return resultat
+
+
 def offres_categorie(
     categorie,
     limite=10,
@@ -256,6 +282,8 @@ def offres_recherche(
                 LOWER(titre) LIKE ?
                 OR
                 LOWER(description) LIKE ?
+                OR
+                LOWER(categorie) LIKE ?
             )
             """
         )
@@ -264,6 +292,7 @@ def offres_recherche(
 
         valeurs.extend(
             [
+                valeur,
                 valeur,
                 valeur,
             ]
@@ -359,8 +388,7 @@ def clean_link(value):
     if not value:
         return ""
 
-    # Cas fréquent :
-    # https://@canalRM24
+    # Empêche les faux liens du type https://@canal
     if re.match(
         r"^https?://@",
         value,
@@ -372,6 +400,7 @@ def clean_link(value):
     if value.startswith("t.me/"):
         value = "https://" + value
 
+    # @username
     if value.startswith("@"):
 
         username = value[1:].strip()
@@ -510,18 +539,22 @@ async def start(
         return
 
     texte = (
-        "<b>🤖 BOT OPPORTUNITÉS</b>\n\n"
+        "<b>🤖 RÉSEAU MONDIAL — ASSISTANT OPPORTUNITÉS</b>\n\n"
         "Bienvenue !\n\n"
-        "Je peux rechercher pour vous :\n\n"
+        "Je peux rechercher les opportunités "
+        "publiées dans notre base :\n\n"
         "💼 <b>Emploi</b>\n"
         "🎓 <b>Stage</b>\n"
         "🎓 <b>Bourse</b>\n\n"
-        "Écrivez directement votre recherche.\n\n"
+        "🌍 International et local selon les offres "
+        "disponibles.\n\n"
+        "<b>Écrivez simplement ce que vous recherchez.</b>\n\n"
         "<b>Exemples :</b>\n"
         "• emploi informatique\n"
         "• stage laboratoire\n"
         "• bourse Canada\n"
-        "• emploi Abidjan"
+        "• emploi Abidjan\n"
+        "• stage international"
     )
 
     await update.message.reply_text(
@@ -566,8 +599,8 @@ async def send_offer(
         2500,
     )
 
-    lien = clean_link(
-        offer["lien"]
+    offre_id = int(
+        offer["id"]
     )
 
     texte = (
@@ -577,23 +610,16 @@ async def send_offer(
         "👇 <b>Pour plus d'informations :</b>"
     )
 
-    boutons = []
-
-    if lien:
-
-        boutons.append(
-            InlineKeyboardButton(
-                "👉 CANDIDATER",
-                url=lien,
-            )
-        )
-
-    boutons.append(
+    boutons = [
+        InlineKeyboardButton(
+            "👉 CANDIDATER • 100 ⭐",
+            callback_data=f"CANDIDATER:{offre_id}",
+        ),
         InlineKeyboardButton(
             "🤖 DEMANDER UNE OFFRE",
             url=bot_link(),
-        )
-    )
+        ),
+    ]
 
     canal = channel_link()
 
@@ -613,6 +639,311 @@ async def send_offer(
         reply_markup=InlineKeyboardMarkup(
             [boutons]
         ),
+    )
+
+
+# ============================================================
+# CANDIDATURE — FACTURE 100 STARS
+# ============================================================
+
+async def candidature_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    try:
+
+        offre_id = int(
+            query.data.split(
+                ":",
+                1,
+            )[1]
+        )
+
+    except (
+        ValueError,
+        IndexError,
+    ):
+
+        await query.message.reply_text(
+            "⚠️ Cette candidature est invalide."
+        )
+
+        return
+
+    offre = offre_par_id(
+        offre_id
+    )
+
+    if not offre:
+
+        await query.message.reply_text(
+            "⚠️ Cette opportunité n'est plus disponible."
+        )
+
+        return
+
+    lien = clean_link(
+        offre["lien"]
+    )
+
+    if not lien:
+
+        await query.message.reply_text(
+            "⚠️ Aucun lien de candidature "
+            "n'est disponible pour cette offre."
+        )
+
+        return
+
+    titre = html_safe(
+        offre["titre"],
+        700,
+    )
+
+    try:
+
+        await query.message.reply_text(
+            "💳 <b>ACCÈS À LA CANDIDATURE</b>\n\n"
+            f"📌 <b>{titre}</b>\n\n"
+            "L'accès au lien officiel de candidature "
+            "coûte <b>100 ⭐ Telegram Stars</b>.\n\n"
+            "Après confirmation du paiement, "
+            "le lien vous sera envoyé automatiquement.",
+            parse_mode=ParseMode.HTML,
+        )
+
+        await context.bot.send_invoice(
+            chat_id=query.from_user.id,
+            title="Accès à la candidature",
+            description=(
+                f"Accès au lien de candidature : "
+                f"{offre['titre']}"
+            )[:255],
+            payload=f"candidature:{offre_id}",
+            provider_token="",
+            currency="XTR",
+            prices=[
+                LabeledPrice(
+                    "Accès candidature",
+                    CANDIDATURE_STARS,
+                )
+            ],
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Création facture candidature"
+        )
+
+        await query.message.reply_text(
+            "⚠️ Impossible de créer le paiement "
+            "pour le moment. Veuillez réessayer."
+        )
+
+
+# ============================================================
+# VALIDATION PAIEMENT
+# ============================================================
+
+async def precheckout_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.pre_checkout_query
+
+    payload = query.invoice_payload
+
+    if not payload.startswith(
+        "candidature:"
+    ):
+
+        await query.answer(
+            ok=False,
+            error_message=(
+                "Commande non reconnue."
+            ),
+        )
+
+        return
+
+    try:
+
+        offre_id = int(
+            payload.split(
+                ":",
+                1,
+            )[1]
+        )
+
+    except (
+        ValueError,
+        IndexError,
+    ):
+
+        await query.answer(
+            ok=False,
+            error_message=(
+                "Référence de candidature invalide."
+            ),
+        )
+
+        return
+
+    offre = offre_par_id(
+        offre_id
+    )
+
+    if not offre:
+
+        await query.answer(
+            ok=False,
+            error_message=(
+                "Cette opportunité n'est plus disponible."
+            ),
+        )
+
+        return
+
+    if query.currency != "XTR":
+
+        await query.answer(
+            ok=False,
+            error_message=(
+                "Le paiement doit être effectué "
+                "en Telegram Stars."
+            ),
+        )
+
+        return
+
+    if query.total_amount != CANDIDATURE_STARS:
+
+        await query.answer(
+            ok=False,
+            error_message=(
+                "Le montant de la commande est incorrect."
+            ),
+        )
+
+        return
+
+    await query.answer(
+        ok=True
+    )
+
+
+# ============================================================
+# PAIEMENT CONFIRMÉ
+# ============================================================
+
+async def successful_payment_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if update.message is None:
+        return
+
+    payment = update.message.successful_payment
+
+    if payment is None:
+        return
+
+    payload = payment.invoice_payload
+
+    if not payload.startswith(
+        "candidature:"
+    ):
+        return
+
+    try:
+
+        offre_id = int(
+            payload.split(
+                ":",
+                1,
+            )[1]
+        )
+
+    except (
+        ValueError,
+        IndexError,
+    ):
+
+        await update.message.reply_text(
+            "⚠️ Paiement reçu, mais la référence "
+            "de candidature est invalide."
+        )
+
+        return
+
+    offre = offre_par_id(
+        offre_id
+    )
+
+    if not offre:
+
+        await update.message.reply_text(
+            "✅ <b>Paiement confirmé.</b>\n\n"
+            "⚠️ Cette offre n'est malheureusement "
+            "plus disponible.",
+            parse_mode=ParseMode.HTML,
+        )
+
+        return
+
+    lien = clean_link(
+        offre["lien"]
+    )
+
+    if not lien:
+
+        await update.message.reply_text(
+            "✅ <b>Paiement confirmé.</b>\n\n"
+            "⚠️ Aucun lien de candidature "
+            "n'est actuellement disponible.",
+            parse_mode=ParseMode.HTML,
+        )
+
+        return
+
+    titre = html_safe(
+        offre["titre"],
+        700,
+    )
+
+    lien_html = html_safe(
+        lien,
+        1500,
+    )
+
+    await update.message.reply_text(
+        "✅ <b>PAIEMENT CONFIRMÉ</b>\n\n"
+        f"📌 <b>{titre}</b>\n\n"
+        "Votre accès est maintenant activé.\n\n"
+        "🔗 <b>LIEN OFFICIEL DE CANDIDATURE :</b>\n"
+        f"{lien_html}\n\n"
+        "⚠️ Vérifiez toujours les informations "
+        "sur le site officiel avant de transmettre "
+        "vos documents.",
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+    logger.info(
+        "Paiement candidature confirmé | "
+        "user=%s | offre=%s | stars=%s | charge=%s",
+        update.effective_user.id,
+        offre_id,
+        payment.total_amount,
+        payment.telegram_payment_charge_id,
     )
 
 
@@ -668,7 +999,7 @@ async def category_callback(
 
 
 # ============================================================
-# RECHERCHE
+# RECHERCHE / ASSISTANT
 # ============================================================
 
 async def user_search(
@@ -707,8 +1038,10 @@ async def user_search(
     if resultats:
 
         await update.message.reply_text(
-            f"🔎 {len(resultats)} "
-            "opportunité(s) trouvée(s)."
+            f"🤖 <b>ASSISTANT RÉSEAU MONDIAL</b>\n\n"
+            f"🔎 {len(resultats)} opportunité(s) "
+            "correspondant à votre demande :",
+            parse_mode=ParseMode.HTML,
         )
 
         for offre in resultats:
@@ -729,13 +1062,18 @@ async def user_search(
         return
 
     await update.message.reply_text(
-        "🔎 Aucune opportunité correspondant "
-        "à votre recherche n'est actuellement "
-        "enregistrée.\n\n"
-        "Essayez par exemple :\n\n"
+        "🤖 <b>ASSISTANT RÉSEAU MONDIAL</b>\n\n"
+        "Je n'ai trouvé aucune opportunité "
+        "correspondant à votre demande parmi "
+        "les offres actuellement publiées.\n\n"
+        "<b>Essayez par exemple :</b>\n\n"
         "💼 emploi informatique\n"
+        "💼 emploi Canada\n"
         "🎓 stage laboratoire\n"
-        "🎓 bourse Canada",
+        "🎓 stage international\n"
+        "🎓 bourse Canada\n"
+        "🎓 bourse France",
+        parse_mode=ParseMode.HTML,
         reply_markup=main_menu(),
     )
 
@@ -786,7 +1124,10 @@ async def ajouter(
                 "ℹ️ Utilisez :\n\n"
                 "/ajouter STAGE | Titre | "
                 "Description | Lien\n\n"
-                "Le lien peut être vide."
+                "Exemple :\n"
+                "/ajouter STAGE | Stage laboratoire | "
+                "Stage international en laboratoire | "
+                "https://exemple.com/candidature"
             )
 
             return
@@ -839,6 +1180,18 @@ async def ajouter(
                 "disponibles pour cette opportunité."
             )
 
+        # ----------------------------------------------------
+        # ENREGISTREMENT EN BASE
+        # ----------------------------------------------------
+
+        offre_id = ajouter_offre(
+            categorie=categorie,
+            titre=titre,
+            description=description,
+            lien=lien,
+            telegram_message_id=None,
+        )
+
         categorie_html = html_safe(
             categorie,
             50,
@@ -862,24 +1215,18 @@ async def ajouter(
             "👇 <b>Pour plus d'informations :</b>"
         )
 
-        boutons = []
-
-        if lien:
-
-            boutons.append(
-                InlineKeyboardButton(
-                    "👉 CANDIDATER",
-                    url=lien,
-                )
-            )
-
-        boutons.append(
+        boutons = [
+            InlineKeyboardButton(
+                "👉 CANDIDATER • 100 ⭐",
+                callback_data=f"CANDIDATER:{offre_id}",
+            ),
             InlineKeyboardButton(
                 "🤖 DEMANDER UNE OFFRE",
                 url=bot_link(),
-            )
-        )
+            ),
+        ]
 
+        # VOIR LE CANAL : INCHANGÉ
         canal = channel_link()
 
         if canal:
@@ -891,7 +1238,10 @@ async def ajouter(
                 )
             )
 
-        # Publication
+        # ----------------------------------------------------
+        # PUBLICATION
+        # ----------------------------------------------------
+
         publication = await context.bot.send_message(
             chat_id=CHANNEL_ID,
             text=canal_text,
@@ -902,14 +1252,28 @@ async def ajouter(
             ),
         )
 
-        # Sauvegarde
-        offre_id = ajouter_offre(
-            categorie=categorie,
-            titre=titre,
-            description=description,
-            lien=lien,
-            telegram_message_id=publication.message_id,
-        )
+        # ----------------------------------------------------
+        # SAUVEGARDE ID MESSAGE TELEGRAM
+        # ----------------------------------------------------
+
+        with db_lock:
+
+            conn = get_db()
+
+            conn.execute(
+                """
+                UPDATE offres
+                SET telegram_message_id = ?
+                WHERE id = ?
+                """,
+                (
+                    publication.message_id,
+                    offre_id,
+                ),
+            )
+
+            conn.commit()
+            conn.close()
 
         await update.message.reply_text(
             "✅ <b>OFFRE PUBLIÉE</b>\n\n"
@@ -918,7 +1282,9 @@ async def ajouter(
             f"🆔 Référence : <b>{offre_id}</b>\n\n"
             "📢 Elle est maintenant disponible "
             "dans le canal et dans la recherche "
-            "du bot.",
+            "du bot.\n\n"
+            "💳 Le bouton CANDIDATER demande "
+            "100 ⭐ avant de délivrer le lien.",
             parse_mode=ParseMode.HTML,
         )
 
@@ -1199,13 +1565,16 @@ async def error_handler(
 
 def main():
 
+    # Base de données
     init_db()
 
+    # Serveur Flask pour Render
     threading.Thread(
         target=run_flask,
         daemon=True,
     ).start()
 
+    # Application Telegram
     application = (
         Application.builder()
         .token(BOT_TOKEN)
@@ -1259,7 +1628,18 @@ def main():
     )
 
     # --------------------------------------------------------
-    # BOUTONS
+    # BOUTON CANDIDATURE — 100 STARS
+    # --------------------------------------------------------
+
+    application.add_handler(
+        CallbackQueryHandler(
+            candidature_callback,
+            pattern=r"^CANDIDATER:\d+$",
+        )
+    )
+
+    # --------------------------------------------------------
+    # BOUTONS CATÉGORIES
     # --------------------------------------------------------
 
     application.add_handler(
@@ -1270,7 +1650,28 @@ def main():
     )
 
     # --------------------------------------------------------
-    # RECHERCHE
+    # VALIDATION PRÉ-PAIEMENT
+    # --------------------------------------------------------
+
+    application.add_handler(
+        PreCheckoutQueryHandler(
+            precheckout_callback
+        )
+    )
+
+    # --------------------------------------------------------
+    # PAIEMENT CONFIRMÉ
+    # --------------------------------------------------------
+
+    application.add_handler(
+        MessageHandler(
+            filters.SUCCESSFUL_PAYMENT,
+            successful_payment_callback,
+        )
+    )
+
+    # --------------------------------------------------------
+    # RECHERCHE ASSISTANT
     # --------------------------------------------------------
 
     application.add_handler(
@@ -1302,6 +1703,10 @@ def main():
             "JobQueue absente : publication automatique désactivée."
         )
 
+    # --------------------------------------------------------
+    # GESTION ERREURS
+    # --------------------------------------------------------
+
     application.add_error_handler(
         error_handler
     )
@@ -1309,6 +1714,10 @@ def main():
     logger.info(
         "BOT OPPORTUNITÉS DÉMARRÉ."
     )
+
+    # --------------------------------------------------------
+    # POLLING
+    # --------------------------------------------------------
 
     application.run_polling(
         allowed_updates=Update.ALL_TYPES
