@@ -4,8 +4,6 @@ import asyncio
 import threading
 import logging
 from functools import wraps
-from html import escape
-from uuid import uuid4
 
 import requests
 from flask import (
@@ -17,12 +15,17 @@ from flask import (
     session,
 )
 
-from telegram import Update
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -66,48 +69,14 @@ ADMIN_KEY = os.environ.get(
     ""
 ).strip()
 
-DB_FILE = os.environ.get(
-    "DB_FILE",
-    "opportunites.db"
-)
-
-AUTO_POST_MINUTES = int(
-    os.environ.get(
-        "AUTO_POST_MINUTES",
-        "60"
-    )
-)
-
-AUTO_COUNTRIES = [
-    x.strip().lower()
-    for x in os.environ.get(
-        "AUTO_COUNTRIES",
-        "ca,gb,fr"
-    ).split(",")
-    if x.strip()
-]
-
-AUTO_JOB_KEYWORDS = os.environ.get(
-    "AUTO_JOB_KEYWORDS",
-    "jobs"
-).strip()
-
-
-# ============================================================
-# LOGGING
-# ============================================================
+DB_FILE = "opportunites.db"
 
 logging.basicConfig(
-    format=(
-        "%(asctime)s - %(name)s - "
-        "%(levelname)s - %(message)s"
-    ),
     level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-logger = logging.getLogger(
-    "opportunites-internationales"
-)
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -133,30 +102,12 @@ COUNTRIES = {
     "in": "Inde",
     "br": "Brésil",
     "mx": "Mexique",
-    "pt": "Portugal",
-    "se": "Suède",
-    "no": "Norvège",
-    "dk": "Danemark",
-    "fi": "Finlande",
-    "nz": "Nouvelle-Zélande",
-    "sg": "Singapour",
-    "ae": "Émirats arabes unis",
 }
-
-
-# ============================================================
-# CATÉGORIES
-# ============================================================
 
 CATEGORIES = {
     "emploi": "Emploi",
-    "job": "Emploi",
-    "jobs": "Emploi",
     "bourse": "Bourse",
-    "bourses": "Bourse",
-    "stage": "Stage rémunéré",
     "stage_remunere": "Stage rémunéré",
-    "stage rémunéré": "Stage rémunéré",
 }
 
 
@@ -172,16 +123,6 @@ def db():
     )
 
     connection.row_factory = sqlite3.Row
-
-    try:
-        connection.execute(
-            "PRAGMA journal_mode=WAL"
-        )
-        connection.execute(
-            "PRAGMA busy_timeout=30000"
-        )
-    except Exception:
-        pass
 
     return connection
 
@@ -204,45 +145,31 @@ def init_db():
             devise TEXT,
             lien TEXT,
             date_publication TEXT,
-            source TEXT DEFAULT 'Adzuna',
-            telegram_message_id INTEGER
+            source TEXT DEFAULT 'Adzuna'
         )
     """)
 
-    # --------------------------------------------------------
-    # Migration de l'ancienne base
-    # --------------------------------------------------------
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS telegram_offres (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            categorie TEXT NOT NULL,
+            titre TEXT NOT NULL,
+            description TEXT,
+            lien TEXT,
+            telegram_message_id INTEGER,
+            date_creation TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
-    columns = {
-        row["name"]
-        for row in connection.execute(
-            "PRAGMA table_info(offres)"
-        ).fetchall()
-    }
-
-    if "telegram_message_id" not in columns:
-        connection.execute("""
-            ALTER TABLE offres
-            ADD COLUMN telegram_message_id INTEGER
-        """)
-
-    if "source" not in columns:
-        connection.execute("""
-            ALTER TABLE offres
-            ADD COLUMN source TEXT DEFAULT 'Adzuna'
-        """)
-
-    if "date_publication" not in columns:
-        connection.execute("""
-            ALTER TABLE offres
-            ADD COLUMN date_publication TEXT
-        """)
-
-    if "devise" not in columns:
-        connection.execute("""
-            ALTER TABLE offres
-            ADD COLUMN devise TEXT
-        """)
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS utilisateurs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id TEXT UNIQUE,
+            username TEXT,
+            first_name TEXT,
+            date_creation TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
     connection.commit()
     connection.close()
@@ -252,33 +179,111 @@ init_db()
 
 
 # ============================================================
-# UTILITAIRES
+# UTILITAIRES ADMIN WEB
 # ============================================================
 
-def normalize_category(value):
-    value = (
-        value or ""
-    ).strip().lower()
+def admin_required(function):
+    @wraps(function)
+    def wrapper(*args, **kwargs):
 
-    return CATEGORIES.get(
-        value,
-        "Emploi"
-    )
+        if not session.get("admin"):
+            return redirect(url_for("admin_login"))
 
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
+# ============================================================
+# UTILITAIRES ADMIN TELEGRAM
+# ============================================================
+
+def is_telegram_admin(update: Update) -> bool:
+
+    if not update.effective_user:
+        return False
+
+    if not ADMIN_TELEGRAM_ID:
+        return False
+
+    try:
+        return (
+            str(update.effective_user.id)
+            == str(ADMIN_TELEGRAM_ID)
+        )
+
+    except Exception:
+        return False
+
+
+async def telegram_admin_required(
+    update: Update
+) -> bool:
+
+    if is_telegram_admin(update):
+        return True
+
+    if update.message:
+
+        await update.message.reply_text(
+            "❌ Commande réservée à l'administrateur."
+        )
+
+    return False
+
+
+# ============================================================
+# ENREGISTREMENT UTILISATEURS TELEGRAM
+# ============================================================
+
+def enregistrer_utilisateur(user):
+
+    if not user:
+        return
+
+    connection = db()
+
+    connection.execute("""
+        INSERT OR IGNORE INTO utilisateurs (
+            telegram_id,
+            username,
+            first_name
+        )
+        VALUES (?, ?, ?)
+    """, (
+        str(user.id),
+        user.username or "",
+        user.first_name or "",
+    ))
+
+    connection.execute("""
+        UPDATE utilisateurs
+        SET username = ?,
+            first_name = ?
+        WHERE telegram_id = ?
+    """, (
+        user.username or "",
+        user.first_name or "",
+        str(user.id),
+    ))
+
+    connection.commit()
+    connection.close()
+
+
+# ============================================================
+# ADZUNA
+# ============================================================
 
 def is_paid_internship(
     text,
     salary_min=None,
     salary_max=None
 ):
-    text = (
-        text or ""
-    ).lower()
 
-    if salary_min is not None:
-        return True
+    text = (text or "").lower()
 
-    if salary_max is not None:
+    if salary_min is not None or salary_max is not None:
         return True
 
     words = (
@@ -303,115 +308,15 @@ def is_paid_internship(
     )
 
 
-def detect_category(
-    titre,
-    description,
-    requested_category,
-    salary_min=None,
-    salary_max=None
-):
-    text = (
-        f"{titre or ''} "
-        f"{description or ''}"
-    ).lower()
-
-    if (
-        requested_category == "Stage rémunéré"
-        and any(
-            word in text
-            for word in (
-                "stage",
-                "intern",
-                "internship",
-                "trainee",
-                "placement"
-            )
-        )
-    ):
-        return "Stage rémunéré"
-
-    if is_paid_internship(
-        text,
-        salary_min,
-        salary_max
-    ):
-        if any(
-            word in text
-            for word in (
-                "stage",
-                "intern",
-                "internship",
-                "trainee",
-                "placement"
-            )
-        ):
-            return "Stage rémunéré"
-
-    return requested_category
-
-
-def format_salary(
-    salary_min,
-    salary_max,
-    devise=""
-):
-    if (
-        salary_min is None
-        and salary_max is None
-    ):
-        return ""
-
-    if salary_min is not None:
-        minimum = str(salary_min)
-    else:
-        minimum = ""
-
-    if salary_max is not None:
-        maximum = str(salary_max)
-    else:
-        maximum = ""
-
-    if minimum and maximum:
-        result = f"{minimum} - {maximum}"
-    elif minimum:
-        result = minimum
-    else:
-        result = maximum
-
-    if devise:
-        result += f" {devise}"
-
-    return result
-
-
-# ============================================================
-# ADZUNA
-# ============================================================
-
 def rechercher_adzuna(
     country,
     keyword="",
     page=1,
     remunerated=False
 ):
-    if not ADZUNA_APP_ID:
-        logger.warning(
-            "ADZUNA_APP_ID manquant."
-        )
+
+    if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
         return []
-
-    if not ADZUNA_APP_KEY:
-        logger.warning(
-            "ADZUNA_APP_KEY manquant."
-        )
-        return []
-
-    country = (
-        country or "ca"
-    ).lower().strip()
-
-    if country not in COUNTRIES:
-        country = "ca"
 
     params = {
         "app_id": ADZUNA_APP_ID,
@@ -420,53 +325,40 @@ def rechercher_adzuna(
         "content-type": "application/json",
     }
 
-    search_keyword = (
-        keyword or ""
-    ).strip()
+    if keyword:
+        params["what"] = keyword
 
     if remunerated:
-        if search_keyword:
-            search_keyword = (
-                f"{search_keyword} paid internship"
-            )
-        else:
-            search_keyword = "paid internship"
 
-    if search_keyword:
-        params["what"] = search_keyword
+        params["what"] = (
+            f"{keyword} paid internship"
+            if keyword
+            else "paid internship"
+        )
 
     url = (
         "https://api.adzuna.com/v1/api/jobs/"
         f"{country}/search/{page}"
     )
 
-    try:
-        response = requests.get(
-            url,
-            params=params,
-            timeout=20,
-            headers={
-                "Accept": "application/json",
-                "User-Agent":
-                    "OpportunitesInternationales/2.0",
-            },
-        )
+    response = requests.get(
+        url,
+        params=params,
+        timeout=20,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": (
+                "OpportunitesInternationales/1.0"
+            ),
+        },
+    )
 
-        response.raise_for_status()
+    response.raise_for_status()
 
-        data = response.json()
-
-        return data.get(
-            "results",
-            []
-        )
-
-    except Exception as error:
-        logger.exception(
-            "Erreur Adzuna: %s",
-            error
-        )
-        return []
+    return response.json().get(
+        "results",
+        []
+    )
 
 
 def enregistrer_offres(
@@ -474,9 +366,10 @@ def enregistrer_offres(
     country,
     categorie
 ):
+
     connection = db()
+
     nombre = 0
-    nouveaux_ids = []
 
     for offre in offres:
 
@@ -541,21 +434,50 @@ def enregistrer_offres(
         )
 
         texte = (
-            f"{titre} "
-            f"{description} "
-            f"{category.get('label', '')}"
-        )
+            titre
+            + " "
+            + description
+            + " "
+            + str(
+                category.get(
+                    "label",
+                    ""
+                )
+                or ""
+            )
+        ).lower()
 
-        categorie_finale = detect_category(
-            titre,
-            texte,
-            categorie,
-            salaire_min,
-            salaire_max
-        )
+        categorie_finale = categorie
+
+        if (
+            categorie == "Stage rémunéré"
+            or is_paid_internship(
+                texte,
+                salaire_min,
+                salaire_max
+            )
+        ):
+
+            if any(
+                word in texte
+                for word in (
+                    "internship",
+                    "intern",
+                    "trainee",
+                    "stage",
+                    "placement",
+                    "rémun",
+                    "remuner",
+                    "paid",
+                )
+            ):
+                categorie_finale = (
+                    "Stage rémunéré"
+                )
 
         try:
-            cursor = connection.execute("""
+
+            connection.execute("""
                 INSERT INTO offres (
                     source_id,
                     titre,
@@ -569,10 +491,12 @@ def enregistrer_offres(
                     devise,
                     lien,
                     date_publication,
-                    source,
-                    telegram_message_id
+                    source
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?
+                )
             """, (
                 source_id,
                 titre,
@@ -590,14 +514,9 @@ def enregistrer_offres(
                 lien,
                 date_publication,
                 "Adzuna",
-                None,
             ))
 
             nombre += 1
-
-            nouveaux_ids.append(
-                cursor.lastrowid
-            )
 
         except sqlite3.IntegrityError:
             pass
@@ -605,144 +524,347 @@ def enregistrer_offres(
     connection.commit()
     connection.close()
 
-    return nombre, nouveaux_ids
+    return nombre
 
 
 # ============================================================
-# FORMATAGE DES OFFRES TELEGRAM
+# MENU TELEGRAM
 # ============================================================
 
-def format_offer_for_telegram(offre):
-    titre = escape(
-        str(offre["titre"] or "")
+def menu_keyboard():
+
+    keyboard = [
+
+        [
+            InlineKeyboardButton(
+                "💼 EMPLOI",
+                callback_data="cat_emploi"
+            ),
+            InlineKeyboardButton(
+                "🎓 STAGE",
+                callback_data="cat_stage"
+            ),
+        ],
+
+        [
+            InlineKeyboardButton(
+                "🎓 BOURSE",
+                callback_data="cat_bourse"
+            ),
+        ],
+
+        [
+            InlineKeyboardButton(
+                "🤖 DEMANDER UNE OFFRE",
+                callback_data="demander_offre"
+            ),
+        ],
+
+        [
+            InlineKeyboardButton(
+                "📢 VOIR LE CANAL",
+                url="https://t.me/canalRM24"
+            ),
+        ],
+    ]
+
+    return InlineKeyboardMarkup(
+        keyboard
     )
 
-    entreprise = escape(
-        str(
-            offre["entreprise"]
-            or "Entreprise non précisée"
-        )
-    )
 
-    pays = escape(
-        str(
-            offre["pays"]
-            or "Non précisé"
-        )
-    )
+MENU_TEXT = """
+🌍 <b>RESEAU MONDIAL</b>
 
-    localisation = escape(
-        str(
-            offre["localisation"]
-            or ""
-        )
-    )
+💼 <b>EMPLOI</b>
+🎓 <b>STAGE</b>
+🎓 <b>BOURSE</b>
 
-    categorie = escape(
-        str(
-            offre["categorie"]
-            or "Emploi"
-        )
-    )
+🤖 <b>DEMANDER UNE OFFRE</b>
 
-    description = str(
-        offre["description"]
-        or ""
-    ).strip()
+📢 Retrouvez toutes les opportunités
+dans notre canal Telegram.
 
-    if len(description) > 900:
-        description = (
-            description[:900]
-            + "..."
-        )
-
-    description = escape(
-        description
-    )
-
-    lien = str(
-        offre["lien"]
-        or ""
-    ).strip()
-
-    salaire = format_salary(
-        offre["salaire_min"],
-        offre["salaire_max"],
-        offre["devise"]
-    )
-
-    texte = (
-        "🌍 <b>OPPORTUNITÉ INTERNATIONALE</b>\n\n"
-        f"📂 <b>{categorie}</b>\n"
-        f"📌 <b>{titre}</b>\n"
-        f"🏢 <b>{entreprise}</b>\n"
-        f"🌍 <b>Pays :</b> {pays}\n"
-    )
-
-    if localisation:
-        texte += (
-            f"📍 <b>Lieu :</b> "
-            f"{localisation}\n"
-        )
-
-    if salaire:
-        texte += (
-            f"💰 <b>Salaire :</b> "
-            f"{escape(salaire)}\n"
-        )
-
-    if description:
-        texte += (
-            f"\n📝 {description}\n"
-        )
-
-    if lien:
-        texte += (
-            f"\n🔗 <a href=\"{escape(lien)}\">"
-            "👉 Voir l'offre / Candidater"
-            "</a>\n"
-        )
-
-    texte += (
-        "\n📢 <b>RESEAU MONDIAL</b>\n"
-        "🌐 Opportunités : emplois • stages • bourses"
-    )
-
-    return texte
+👇 Choisissez une option :
+"""
 
 
-# ============================================================
-# PUBLICATION TELEGRAM
-# ============================================================
-
-async def publier_offre(
+async def envoyer_menu(
     bot,
-    offre_id
+    chat_id
 ):
-    connection = db()
-
-    offre = connection.execute("""
-        SELECT *
-        FROM offres
-        WHERE id = ?
-    """, (
-        offre_id,
-    )).fetchone()
-
-    connection.close()
-
-    if offre is None:
-        return False
-
-    if offre["telegram_message_id"]:
-        return True
 
     try:
-        message = await bot.send_message(
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text=MENU_TEXT,
+            parse_mode=ParseMode.HTML,
+            reply_markup=menu_keyboard(),
+            disable_web_page_preview=True,
+        )
+
+        return True
+
+    except Exception as error:
+
+        logger.exception(
+            "Erreur envoi menu : %s",
+            error
+        )
+
+        return False
+
+
+# ============================================================
+# PUBLICATION MENU CANAL
+# ============================================================
+
+async def publier_menu_canal(
+    bot
+):
+
+    try:
+
+        await bot.send_message(
             chat_id=CHANNEL_ID,
-            text=format_offer_for_telegram(
-                offre
+            text=MENU_TEXT,
+            parse_mode=ParseMode.HTML,
+            reply_markup=menu_keyboard(),
+            disable_web_page_preview=True,
+        )
+
+        logger.info(
+            "Menu publié dans %s",
+            CHANNEL_ID
+        )
+
+        return True
+
+    except Exception as error:
+
+        logger.exception(
+            "Erreur publication menu canal : %s",
+            error
+        )
+
+        return False
+
+
+async def menu_toutes_les_2_heures(
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    logger.info(
+        "Publication automatique du menu..."
+    )
+
+    await publier_menu_canal(
+        context.bot
+    )
+
+
+# ============================================================
+# /START
+# ============================================================
+
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.effective_user:
+        return
+
+    enregistrer_utilisateur(
+        update.effective_user
+    )
+
+    await envoyer_menu(
+        context.bot,
+        update.effective_chat.id
+    )
+
+
+# ============================================================
+# /MENU
+# ============================================================
+
+async def menu_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.effective_chat:
+        return
+
+    await envoyer_menu(
+        context.bot,
+        update.effective_chat.id
+    )
+
+
+# ============================================================
+# /ID
+# ============================================================
+
+async def id_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.effective_user:
+        return
+
+    await update.message.reply_text(
+        "🆔 Votre Telegram ID :\n\n"
+        f"{update.effective_user.id}"
+    )
+
+
+# ============================================================
+# /TESTCANAL
+# ============================================================
+
+async def testcanal_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not await telegram_admin_required(
+        update
+    ):
+        return
+
+    try:
+
+        message = await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=(
+                "🧪 <b>TEST RÉUSSI</b>\n\n"
+                "Le bot peut publier dans "
+                "le canal <b>@canalRM24</b>."
             ),
+            parse_mode=ParseMode.HTML,
+        )
+
+        await update.message.reply_text(
+            "✅ Test réussi : le bot peut "
+            "publier dans le canal."
+        )
+
+        logger.info(
+            "Test canal réussi : message %s",
+            message.message_id
+        )
+
+    except Exception as error:
+
+        logger.exception(
+            "Erreur test canal : %s",
+            error
+        )
+
+        await update.message.reply_text(
+            "❌ Échec de publication dans "
+            "le canal.\n\n"
+            f"Erreur : {str(error)[:700]}"
+        )
+
+
+# ============================================================
+# /AJOUTER
+# ============================================================
+
+async def ajouter_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not await telegram_admin_required(
+        update
+    ):
+        return
+
+    texte = (
+        update.message.text
+        or ""
+    ).strip()
+
+    contenu = texte[
+        len("/ajouter"):
+    ].strip()
+
+    morceaux = [
+        morceau.strip()
+        for morceau in contenu.split("|")
+    ]
+
+    if len(morceaux) < 4:
+
+        await update.message.reply_text(
+            "❌ Format incorrect.\n\n"
+            "Utilise :\n"
+            "/ajouter CATEGORIE | TITRE | "
+            "DESCRIPTION | LIEN\n\n"
+            "Exemple :\n"
+            "/ajouter STAGE | "
+            "Bourse Oxford | "
+            "Entièrement financée au Royaume-Uni | "
+            "https://example.com"
+        )
+
+        return
+
+    categorie = morceaux[0]
+    titre = morceaux[1]
+    description = morceaux[2]
+    lien = morceaux[3]
+
+    if not titre:
+
+        await update.message.reply_text(
+            "❌ Le titre est obligatoire."
+        )
+
+        return
+
+    connection = db()
+
+    cursor = connection.execute("""
+        INSERT INTO telegram_offres (
+            categorie,
+            titre,
+            description,
+            lien
+        )
+        VALUES (?, ?, ?, ?)
+    """, (
+        categorie,
+        titre,
+        description,
+        lien,
+    ))
+
+    offre_id = cursor.lastrowid
+
+    connection.commit()
+    connection.close()
+
+    texte_canal = (
+        "🌍 <b>RESEAU MONDIAL</b>\n\n"
+        f"📂 <b>{categorie.upper()}</b>\n\n"
+        f"📌 <b>{titre}</b>\n\n"
+        f"{description}\n\n"
+        f"🔗 {lien}\n\n"
+        f"🆔 Référence : {offre_id}"
+    )
+
+    try:
+
+        message = await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=texte_canal,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=False,
         )
@@ -750,7 +872,7 @@ async def publier_offre(
         connection = db()
 
         connection.execute("""
-            UPDATE offres
+            UPDATE telegram_offres
             SET telegram_message_id = ?
             WHERE id = ?
         """, (
@@ -761,825 +883,616 @@ async def publier_offre(
         connection.commit()
         connection.close()
 
-        logger.info(
-            "Offre %s publiée dans %s.",
-            offre_id,
-            CHANNEL_ID
-        )
-
-        return True
-
-    except Exception as error:
-        logger.exception(
-            "Impossible de publier l'offre %s: %s",
-            offre_id,
-            error
-        )
-
-        return False
-
-
-async def publier_nouvelles_offres(bot):
-    connection = db()
-
-    offres = connection.execute("""
-        SELECT id
-        FROM offres
-        WHERE telegram_message_id IS NULL
-        ORDER BY id ASC
-        LIMIT 5
-    """).fetchall()
-
-    connection.close()
-
-    if not offres:
-        logger.info(
-            "Aucune nouvelle offre à publier."
-        )
-        return 0
-
-    nombre = 0
-
-    for offre in offres:
-        success = await publier_offre(
-            bot,
-            offre["id"]
-        )
-
-        if success:
-            nombre += 1
-
-        await asyncio.sleep(2)
-
-    return nombre
-
-
-# ============================================================
-# CRÉATION MANUELLE D'UNE OFFRE
-# ============================================================
-
-def creer_offre_manuelle(
-    categorie,
-    titre,
-    description,
-    lien
-):
-    categorie_finale = normalize_category(
-        categorie
-    )
-
-    source_id = (
-        "manual_"
-        + uuid4().hex
-    )
-
-    connection = db()
-
-    cursor = connection.execute("""
-        INSERT INTO offres (
-            source_id,
-            titre,
-            entreprise,
-            description,
-            pays,
-            localisation,
-            categorie,
-            salaire_min,
-            salaire_max,
-            devise,
-            lien,
-            date_publication,
-            source,
-            telegram_message_id
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        source_id,
-        titre,
-        "RESEAU MONDIAL",
-        description,
-        "",
-        "",
-        categorie_finale,
-        None,
-        None,
-        "",
-        lien,
-        "",
-        "Manuel",
-        None,
-    ))
-
-    offre_id = cursor.lastrowid
-
-    connection.commit()
-    connection.close()
-
-    return offre_id
-
-
-# ============================================================
-# ADMIN TELEGRAM
-# ============================================================
-
-def telegram_admin_required(
-    update: Update
-):
-    if not ADMIN_TELEGRAM_ID:
-        return False
-
-    user = update.effective_user
-
-    if user is None:
-        return False
-
-    return str(
-        user.id
-    ) == ADMIN_TELEGRAM_ID
-
-
-# ============================================================
-# COMMANDES TELEGRAM
-# ============================================================
-
-async def start_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    message = (
-        "🌍 <b>RESEAU MONDIAL</b>\n\n"
-        "Bienvenue sur le bot des opportunités "
-        "internationales.\n\n"
-        "💼 /emploi — offres d'emploi\n"
-        "💰 /stage — stages rémunérés\n"
-        "🎓 /bourse — bourses\n"
-        "🔎 /recherche mot-clé — rechercher\n\n"
-        "Exemple :\n"
-        "<code>/recherche informatique</code>\n\n"
-        "Pour l'administration :\n"
-        "<code>/ajouter</code>\n"
-        "<code>/testcanal</code>"
-    )
-
-    await update.message.reply_text(
-        message,
-        parse_mode=ParseMode.HTML
-    )
-
-
-async def id_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    user = update.effective_user
-
-    await update.message.reply_text(
-        f"🆔 Votre Telegram ID : {user.id}"
-    )
-
-
-async def testcanal_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    if not telegram_admin_required(
-        update
-    ):
         await update.message.reply_text(
-            "❌ Commande réservée à l'administrateur."
-        )
-        return
-
-    try:
-        sent = await context.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=(
-                "✅ <b>TEST REUSSI</b>\n\n"
-                "Le bot peut publier dans le canal "
-                "RESEAU MONDIAL.\n\n"
-                f"📢 Canal : {escape(CHANNEL_ID)}"
-            ),
-            parse_mode=ParseMode.HTML
-        )
-
-        await update.message.reply_text(
-            "✅ Test réussi : le bot peut publier "
-            f"dans le canal.\n\n"
-            f"Message ID : {sent.message_id}"
-        )
-
-    except Exception as error:
-        logger.exception(
-            "Erreur test canal: %s",
-            error
-        )
-
-        await update.message.reply_text(
-            "❌ Le bot n'a pas réussi à publier "
-            "dans le canal.\n\n"
-            f"Erreur : {str(error)[:500]}"
-        )
-
-
-async def ajouter_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    if not telegram_admin_required(
-        update
-    ):
-        await update.message.reply_text(
-            "❌ Commande réservée à l'administrateur."
-        )
-        return
-
-    text = (
-        update.message.text
-        or ""
-    ).strip()
-
-    parts = text.split(
-        "|",
-        3
-    )
-
-    if len(parts) != 4:
-        await update.message.reply_text(
-            "❌ Format incorrect.\n\n"
-            "Utilisez :\n"
-            "/ajouter CATEGORIE | TITRE | "
-            "DESCRIPTION | LIEN\n\n"
-            "Exemple :\n"
-            "/ajouter STAGE | Stage informatique | "
-            "Stage rémunéré en Belgique | "
-            "https://exemple.com"
-        )
-        return
-
-    categorie = parts[0].replace(
-        "/ajouter",
-        "",
-        1
-    ).strip()
-
-    titre = parts[1].strip()
-    description = parts[2].strip()
-    lien = parts[3].strip()
-
-    if not titre:
-        await update.message.reply_text(
-            "❌ Le titre est obligatoire."
-        )
-        return
-
-    if not description:
-        await update.message.reply_text(
-            "❌ La description est obligatoire."
-        )
-        return
-
-    if not lien.startswith(
-        ("http://", "https://")
-    ):
-        await update.message.reply_text(
-            "❌ Le lien doit commencer par "
-            "http:// ou https://"
-        )
-        return
-
-    try:
-        offre_id = creer_offre_manuelle(
-            categorie,
-            titre,
-            description,
-            lien
-        )
-
-        success = await publier_offre(
-            context.bot,
-            offre_id
-        )
-
-        if success:
-            await update.message.reply_text(
-                "✅ <b>OFFRE PUBLIÉE</b>\n\n"
-                f"📂 {escape(normalize_category(categorie))}\n"
-                f"📌 {escape(titre)}\n"
-                f"🆔 Référence : {offre_id}\n\n"
-                "📢 Elle est maintenant disponible "
-                "dans le canal et dans la recherche "
-                "du bot.",
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            await update.message.reply_text(
-                "⚠️ L'offre a été enregistrée, "
-                "mais sa publication dans le canal "
-                "a échoué.\n\n"
-                f"Référence : {offre_id}"
-            )
-
-    except Exception as error:
-        logger.exception(
-            "Erreur /ajouter: %s",
-            error
-        )
-
-        await update.message.reply_text(
-            "❌ Erreur lors de l'ajout de l'offre.\n\n"
-            f"{str(error)[:500]}"
-        )
-
-
-async def rechercher_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    text = (
-        update.message.text
-        or ""
-    ).strip()
-
-    keyword = text[
-        len("/recherche"):
-    ].strip()
-
-    if not keyword:
-        await update.message.reply_text(
-            "🔎 Utilisation :\n"
-            "/recherche informatique\n\n"
-            "ou\n"
-            "/recherche infirmier Canada"
-        )
-        return
-
-    offres_api = []
-
-    for country in (
-        "ca",
-        "gb",
-        "fr"
-    ):
-        result = rechercher_adzuna(
-            country=country,
-            keyword=keyword,
-            page=1,
-            remunerated=False
-        )
-
-        offres_api.extend(
-            [
-                (
-                    result,
-                    country
-                )
-                for result in result
-            ]
-        )
-
-        if len(offres_api) >= 10:
-            break
-
-    total = 0
-
-    for result, country in offres_api[:10]:
-        count, ids = enregistrer_offres(
-            [result],
-            country,
-            "Emploi"
-        )
-
-        total += count
-
-    connection = db()
-
-    rows = connection.execute("""
-        SELECT *
-        FROM offres
-        WHERE (
-            lower(titre) LIKE ?
-            OR lower(description) LIKE ?
-        )
-        ORDER BY id DESC
-        LIMIT 5
-    """, (
-        f"%{keyword.lower()}%",
-        f"%{keyword.lower()}%",
-    )).fetchall()
-
-    connection.close()
-
-    if not rows:
-        await update.message.reply_text(
-            "🔎 Aucune offre trouvée pour : "
-            f"{keyword}"
-        )
-        return
-
-    await update.message.reply_text(
-        f"🔎 <b>Résultats pour :</b> "
-        f"{escape(keyword)}\n\n"
-        f"📊 {len(rows)} résultat(s)",
-        parse_mode=ParseMode.HTML
-    )
-
-    for row in rows:
-        try:
-            await update.message.reply_text(
-                format_offer_for_telegram(
-                    row
-                ),
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=False
-            )
-        except Exception as error:
-            logger.exception(
-                "Erreur envoi résultat recherche: %s",
-                error
-            )
-
-        await asyncio.sleep(1)
-
-
-async def categorie_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    categorie
-):
-    connection = db()
-
-    rows = connection.execute("""
-        SELECT *
-        FROM offres
-        WHERE categorie = ?
-        ORDER BY id DESC
-        LIMIT 5
-    """, (
-        categorie,
-    )).fetchall()
-
-    connection.close()
-
-    if not rows:
-        await update.message.reply_text(
-            f"🔎 Aucune offre disponible "
-            f"dans la catégorie : {categorie}."
-        )
-        return
-
-    await update.message.reply_text(
-        f"📂 <b>{escape(categorie)}</b>\n\n"
-        f"{len(rows)} offre(s) trouvée(s).",
-        parse_mode=ParseMode.HTML
-    )
-
-    for row in rows:
-        await update.message.reply_text(
-            format_offer_for_telegram(row),
+            "✅ <b>OFFRE PUBLIÉE</b>\n\n"
+            f"📂 {categorie}\n"
+            f"📌 {titre}\n"
+            f"🆔 Référence : {offre_id}\n\n"
+            "📢 Elle est maintenant disponible "
+            "dans le canal et dans la recherche "
+            "du bot.",
             parse_mode=ParseMode.HTML,
-            disable_web_page_preview=False
         )
 
-        await asyncio.sleep(1)
+    except Exception as error:
+
+        logger.exception(
+            "Erreur publication offre : %s",
+            error
+        )
+
+        await update.message.reply_text(
+            "⚠️ Offre enregistrée, mais la "
+            "publication dans le canal a échoué.\n\n"
+            f"Erreur : {str(error)[:700]}"
+        )
 
 
-async def emploi_command(
+# ============================================================
+# ENVOI DIRECT DES MESSAGES ADMIN AU CANAL
+# ============================================================
+
+async def publier_message_admin(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
-    await categorie_command(
-        update,
-        context,
-        "Emploi"
-    )
 
-
-async def stage_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    await categorie_command(
-        update,
-        context,
-        "Stage rémunéré"
-    )
-
-
-async def bourse_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    await categorie_command(
-        update,
-        context,
-        "Bourse"
-    )
-
-
-async def texte_recherche(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
     if not update.message:
         return
 
-    text = (
+    if not is_telegram_admin(update):
+
+        # Les autres utilisateurs peuvent
+        # utiliser le bot pour rechercher.
+        await rechercher_demande(
+            update,
+            context
+        )
+
+        return
+
+    texte = (
         update.message.text
         or ""
     ).strip()
 
-    if len(text) < 3:
+    if not texte:
         return
 
-    lower = text.lower()
+    try:
 
-    keywords = (
-        "emploi",
-        "job",
-        "travail",
-        "stage",
-        "bourse",
-        "cherche",
-        "recherche",
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=texte,
+            disable_web_page_preview=False,
+        )
+
+        await update.message.reply_text(
+            "✅ Message publié dans le canal."
+        )
+
+        logger.info(
+            "Message admin publié dans le canal."
+        )
+
+    except Exception as error:
+
+        logger.exception(
+            "Erreur publication message admin : %s",
+            error
+        )
+
+        await update.message.reply_text(
+            "❌ Impossible de publier le message.\n\n"
+            f"Erreur : {str(error)[:700]}"
+        )
+
+
+# ============================================================
+# RECHERCHE DES OFFRES TELEGRAM
+# ============================================================
+
+def rechercher_offres_telegram(
+    recherche,
+    categorie=None,
+    limite=10
+):
+
+    recherche = (
+        recherche
+        or ""
+    ).strip().lower()
+
+    connection = db()
+
+    if categorie:
+
+        rows = connection.execute("""
+            SELECT *
+            FROM telegram_offres
+            WHERE lower(categorie) LIKE ?
+              AND (
+                    lower(titre) LIKE ?
+                    OR lower(description) LIKE ?
+                  )
+            ORDER BY id DESC
+            LIMIT ?
+        """, (
+            f"%{categorie.lower()}%",
+            f"%{recherche}%",
+            f"%{recherche}%",
+            limite,
+        )).fetchall()
+
+    else:
+
+        rows = connection.execute("""
+            SELECT *
+            FROM telegram_offres
+            WHERE lower(titre) LIKE ?
+               OR lower(description) LIKE ?
+               OR lower(categorie) LIKE ?
+            ORDER BY id DESC
+            LIMIT ?
+        """, (
+            f"%{recherche}%",
+            f"%{recherche}%",
+            f"%{recherche}%",
+            limite,
+        )).fetchall()
+
+    connection.close()
+
+    return rows
+
+
+async def envoyer_offres_telegram(
+    update,
+    offres,
+    titre="🔎 OFFRES DISPONIBLES"
+):
+
+    if not offres:
+
+        await update.message.reply_text(
+            "😔 Aucune offre correspondante "
+            "n'a été trouvée pour le moment.\n\n"
+            "📢 Consulte également notre canal :\n"
+            "https://t.me/canalRM24"
+        )
+
+        return
+
+    texte = f"{titre}\n\n"
+
+    for offre in offres:
+
+        texte += (
+            f"📌 <b>{offre['titre']}</b>\n"
+            f"📂 {offre['categorie']}\n"
+        )
+
+        if offre["description"]:
+            texte += (
+                f"📝 {offre['description'][:500]}\n"
+            )
+
+        if offre["lien"]:
+            texte += (
+                f"🔗 {offre['lien']}\n"
+            )
+
+        texte += (
+            f"🆔 Référence : {offre['id']}\n"
+            "━━━━━━━━━━━━━━\n"
+        )
+
+    await update.message.reply_text(
+        texte,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=False,
     )
 
-    if not any(
-        word in lower
-        for word in keywords
+
+# ============================================================
+# DEMANDE D'OFFRE
+# ============================================================
+
+async def demander_offre_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    context.user_data[
+        "attente_recherche"
+    ] = True
+
+    await query.message.reply_text(
+        "🤖 <b>DEMANDER UNE OFFRE</b>\n\n"
+        "Écris ce que tu recherches.\n\n"
+        "Exemples :\n"
+        "• ingénieur informatique\n"
+        "• stage en Belgique\n"
+        "• bourse au Canada\n"
+        "• emploi en France\n"
+        "• stage rémunéré\n\n"
+        "🔎 Le bot recherchera les offres "
+        "correspondantes.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+# ============================================================
+# CALLBACK CATÉGORIES
+# ============================================================
+
+async def categorie_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    data = query.data
+
+    if data == "cat_emploi":
+
+        categorie = "emploi"
+        titre = "💼 EMPLOIS DISPONIBLES"
+
+    elif data == "cat_stage":
+
+        categorie = "stage"
+        titre = "🎓 STAGES DISPONIBLES"
+
+    elif data == "cat_bourse":
+
+        categorie = "bourse"
+        titre = "🎓 BOURSES DISPONIBLES"
+
+    else:
+        return
+
+    offres = rechercher_offres_telegram(
+        "",
+        categorie=categorie,
+        limite=10
+    )
+
+    if not offres:
+
+        await query.message.reply_text(
+            f"{titre}\n\n"
+            "😔 Aucune offre n'est encore "
+            "enregistrée dans cette catégorie.\n\n"
+            "📢 Consulte le canal :\n"
+            "https://t.me/canalRM24"
+        )
+
+        return
+
+    texte = (
+        f"<b>{titre}</b>\n\n"
+    )
+
+    for offre in offres:
+
+        texte += (
+            f"📌 <b>{offre['titre']}</b>\n"
+            f"📝 {offre['description'][:400]}\n"
+        )
+
+        if offre["lien"]:
+
+            texte += (
+                f"🔗 {offre['lien']}\n"
+            )
+
+        texte += (
+            f"🆔 Référence : {offre['id']}\n"
+            "━━━━━━━━━━━━━━\n"
+        )
+
+    await query.message.reply_text(
+        texte,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=False,
+    )
+
+
+# ============================================================
+# RECHERCHE UTILISATEUR
+# ============================================================
+
+async def rechercher_demande(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
+
+    texte = (
+        update.message.text
+        or ""
+    ).strip()
+
+    if not texte:
+        return
+
+    enregistrer_utilisateur(
+        update.effective_user
+    )
+
+    offres = rechercher_offres_telegram(
+        texte,
+        limite=10
+    )
+
+    if offres:
+
+        await envoyer_offres_telegram(
+            update,
+            offres
+        )
+
+        return
+
+    # Recherche Adzuna si aucune offre locale
+    if ADZUNA_APP_ID and ADZUNA_APP_KEY:
+
+        try:
+
+            offres_api = rechercher_adzuna(
+                country="ca",
+                keyword=texte,
+                page=1,
+                remunerated=False,
+            )
+
+            if offres_api:
+
+                enregistrer_offres(
+                    offres_api,
+                    "ca",
+                    "Emploi"
+                )
+
+                await update.message.reply_text(
+                    "🔎 J'ai trouvé des offres "
+                    "correspondantes sur notre "
+                    "source internationale.\n\n"
+                    "🌐 Consulte le site :\n"
+                    "https://telegram-opportunites-bot."
+                    "onrender.com"
+                )
+
+                return
+
+        except Exception as error:
+
+            logger.warning(
+                "Recherche Adzuna utilisateur : %s",
+                error
+            )
+
+    await update.message.reply_text(
+        "🔎 Je n'ai pas trouvé d'offre "
+        "correspondante pour le moment.\n\n"
+        "Essaie avec d'autres mots-clés.\n\n"
+        "Exemple :\n"
+        "💼 ingénieur\n"
+        "🎓 bourse Canada\n"
+        "🎓 stage Belgique\n\n"
+        "📢 Canal : https://t.me/canalRM24"
+    )
+
+
+# ============================================================
+# /STATS
+# ============================================================
+
+async def stats_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not await telegram_admin_required(
+        update
     ):
         return
 
+    connection = db()
+
+    offres = connection.execute(
+        "SELECT COUNT(*) AS total FROM telegram_offres"
+    ).fetchone()["total"]
+
+    utilisateurs = connection.execute(
+        "SELECT COUNT(*) AS total FROM utilisateurs"
+    ).fetchone()["total"]
+
+    connection.close()
+
     await update.message.reply_text(
-        "🔎 Je recherche les opportunités "
-        "correspondantes...\n\n"
-        "Utilisez aussi :\n"
-        "/recherche mot-clé"
+        "📊 <b>STATISTIQUES</b>\n\n"
+        f"📌 Offres : {offres}\n"
+        f"👥 Utilisateurs : {utilisateurs}",
+        parse_mode=ParseMode.HTML,
     )
 
 
 # ============================================================
-# PUBLICATION AUTOMATIQUE
+# GESTION ERREURS TELEGRAM
 # ============================================================
 
-async def auto_publication_job(
-    context: ContextTypes.DEFAULT_TYPE
+async def telegram_error_handler(
+    update,
+    context
 ):
+
+    logger.exception(
+        "Erreur Telegram : %s",
+        context.error
+    )
+
+
+# ============================================================
+# DÉMARRAGE DU BOT
+# ============================================================
+
+telegram_application = None
+telegram_thread = None
+
+
+def lancer_bot_telegram():
+
+    global telegram_application
+
+    if not BOT_TOKEN:
+
+        logger.warning(
+            "BOT_TOKEN absent. "
+            "Le bot Telegram ne sera pas lancé."
+        )
+
+        return
+
     try:
-        bot = context.application.bot
 
-        # ----------------------------------------------------
-        # 1. Publier les offres déjà présentes en base
-        # ----------------------------------------------------
-
-        await publier_nouvelles_offres(
-            bot
+        telegram_application = (
+            Application
+            .builder()
+            .token(BOT_TOKEN)
+            .build()
         )
 
         # ----------------------------------------------------
-        # 2. Récupérer automatiquement de nouvelles offres
+        # COMMANDES
         # ----------------------------------------------------
 
-        if (
-            ADZUNA_APP_ID
-            and ADZUNA_APP_KEY
-        ):
-            for country in AUTO_COUNTRIES:
+        telegram_application.add_handler(
+            CommandHandler(
+                "start",
+                start_command
+            )
+        )
 
-                offres = rechercher_adzuna(
-                    country=country,
-                    keyword=AUTO_JOB_KEYWORDS,
-                    page=1,
-                    remunerated=False
-                )
+        telegram_application.add_handler(
+            CommandHandler(
+                "menu",
+                menu_command
+            )
+        )
 
-                if offres:
-                    enregistrer_offres(
-                        offres,
-                        country,
-                        "Emploi"
-                    )
+        telegram_application.add_handler(
+            CommandHandler(
+                "id",
+                id_command
+            )
+        )
 
-            # Publier les nouvelles offres
-            await publier_nouvelles_offres(
-                bot
+        telegram_application.add_handler(
+            CommandHandler(
+                "testcanal",
+                testcanal_command
+            )
+        )
+
+        telegram_application.add_handler(
+            CommandHandler(
+                "ajouter",
+                ajouter_command
+            )
+        )
+
+        telegram_application.add_handler(
+            CommandHandler(
+                "stats",
+                stats_command
+            )
+        )
+
+        # ----------------------------------------------------
+        # BOUTONS
+        # ----------------------------------------------------
+
+        telegram_application.add_handler(
+            CallbackQueryHandler(
+                demander_offre_callback,
+                pattern="^demander_offre$"
+            )
+        )
+
+        telegram_application.add_handler(
+            CallbackQueryHandler(
+                categorie_callback,
+                pattern="^cat_"
+            )
+        )
+
+        # ----------------------------------------------------
+        # MESSAGES TEXTE
+        # ----------------------------------------------------
+
+        telegram_application.add_handler(
+            MessageHandler(
+                filters.TEXT
+                & ~filters.COMMAND,
+                message_texte_handler
+            )
+        )
+
+        telegram_application.add_error_handler(
+            telegram_error_handler
+        )
+
+        # ----------------------------------------------------
+        # MENU AUTOMATIQUE TOUTES LES 2 HEURES
+        # ----------------------------------------------------
+
+        if telegram_application.job_queue:
+
+            telegram_application.job_queue.run_repeating(
+                menu_toutes_les_2_heures,
+                interval=7200,
+                first=30,
+                name="menu_2_heures",
             )
 
+            logger.info(
+                "Publication automatique "
+                "toutes les 2 heures activée."
+            )
+
+        else:
+
+            logger.error(
+                "JobQueue indisponible. "
+                "Vérifie python-telegram-bot[job-queue]."
+            )
+
+        logger.info(
+            "Démarrage du bot Telegram..."
+        )
+
+        telegram_application.run_polling(
+            drop_pending_updates=True,
+            stop_signals=None,
+            close_loop=False,
+        )
+
     except Exception as error:
+
         logger.exception(
-            "Erreur publication automatique: %s",
+            "ERREUR DÉMARRAGE BOT TELEGRAM : %s",
             error
         )
 
 
-# ============================================================
-# DÉMARRAGE DU BOT TELEGRAM
-# ============================================================
+def demarrer_bot_en_arriere_plan():
 
-telegram_thread = None
-telegram_loop_started = False
-
-
-async def telegram_main():
-    if not BOT_TOKEN:
-        logger.error(
-            "BOT_TOKEN n'est pas configuré. "
-            "Le bot Telegram ne peut pas démarrer."
-        )
-        return
-
-    logger.info(
-        "Démarrage du bot Telegram..."
-    )
-
-    telegram_app = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .build()
-    )
-
-    # --------------------------------------------------------
-    # Commandes
-    # --------------------------------------------------------
-
-    telegram_app.add_handler(
-        CommandHandler(
-            "start",
-            start_command
-        )
-    )
-
-    telegram_app.add_handler(
-        CommandHandler(
-            "id",
-            id_command
-        )
-    )
-
-    telegram_app.add_handler(
-        CommandHandler(
-            "ajouter",
-            ajouter_command
-        )
-    )
-
-    telegram_app.add_handler(
-        CommandHandler(
-            "testcanal",
-            testcanal_command
-        )
-    )
-
-    telegram_app.add_handler(
-        CommandHandler(
-            "recherche",
-            rechercher_command
-        )
-    )
-
-    telegram_app.add_handler(
-        CommandHandler(
-            "emploi",
-            emploi_command
-        )
-    )
-
-    telegram_app.add_handler(
-        CommandHandler(
-            "stage",
-            stage_command
-        )
-    )
-
-    telegram_app.add_handler(
-        CommandHandler(
-            "bourse",
-            bourse_command
-        )
-    )
-
-    # --------------------------------------------------------
-    # Recherche par texte
-    # --------------------------------------------------------
-
-    telegram_app.add_handler(
-        MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
-            texte_recherche
-        )
-    )
-
-    # --------------------------------------------------------
-    # Initialisation
-    # --------------------------------------------------------
-
-    await telegram_app.initialize()
-
-    await telegram_app.start()
-
-    if telegram_app.updater is None:
-        raise RuntimeError(
-            "Updater Telegram indisponible."
-        )
-
-    await telegram_app.updater.start_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
-    )
-
-    logger.info(
-        "BOT TELEGRAM DEMARRE AVEC SUCCES."
-    )
-
-    logger.info(
-        "Canal cible : %s",
-        CHANNEL_ID
-    )
-
-    # --------------------------------------------------------
-    # Job automatique
-    # --------------------------------------------------------
-
-    if telegram_app.job_queue:
-
-        telegram_app.job_queue.run_repeating(
-            auto_publication_job,
-            interval=(
-                AUTO_POST_MINUTES * 60
-            ),
-            first=30,
-            name="publication_automatique"
-        )
-
-        logger.info(
-            "Publication automatique activée "
-            "toutes les %s minutes.",
-            AUTO_POST_MINUTES
-        )
-
-    else:
-        logger.error(
-            "JobQueue indisponible. "
-            "Vérifiez python-telegram-bot[job-queue]."
-        )
-
-    # --------------------------------------------------------
-    # Garder le bot vivant
-    # --------------------------------------------------------
-
-    stop_event = asyncio.Event()
-
-    try:
-        await stop_event.wait()
-
-    finally:
-        logger.info(
-            "Arrêt du bot Telegram..."
-        )
-
-        if telegram_app.updater:
-            await telegram_app.updater.stop()
-
-        await telegram_app.stop()
-        await telegram_app.shutdown()
-
-
-def run_telegram_thread():
-    global telegram_loop_started
-
-    if telegram_loop_started:
-        return
-
-    telegram_loop_started = True
-
-    try:
-        asyncio.run(
-            telegram_main()
-        )
-    except Exception as error:
-        logger.exception(
-            "Le bot Telegram s'est arrêté : %s",
-            error
-        )
-
-
-def start_telegram_bot():
     global telegram_thread
 
     if not BOT_TOKEN:
-        logger.error(
-            "BOT_TOKEN manquant. "
-            "Bot Telegram non lancé."
-        )
         return
 
-    if telegram_thread is not None:
+    if (
+        telegram_thread
+        and telegram_thread.is_alive()
+    ):
         return
 
     telegram_thread = threading.Thread(
-        target=run_telegram_thread,
-        name="telegram-bot",
-        daemon=True
+        target=lancer_bot_telegram,
+        daemon=True,
+        name="telegram-bot-thread"
     )
 
     telegram_thread.start()
@@ -1590,25 +1503,54 @@ def start_telegram_bot():
 
 
 # ============================================================
-# FLASK - ADMIN
+# HANDLER TEXTE CENTRAL
 # ============================================================
 
-def admin_required(function):
-    @wraps(function)
-    def wrapper(*args, **kwargs):
+async def message_texte_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
-        if not session.get("admin"):
-            return redirect(
-                url_for("admin_login")
-            )
+    if not update.message:
+        return
 
-        return function(
-            *args,
-            **kwargs
+    texte = (
+        update.message.text
+        or ""
+    ).strip()
+
+    if not texte:
+        return
+
+    # --------------------------------------------------------
+    # ADMIN
+    # Tout message texte de l'admin est publié directement
+    # dans le canal.
+    # --------------------------------------------------------
+
+    if is_telegram_admin(update):
+
+        await publier_message_admin(
+            update,
+            context
         )
 
-    return wrapper
+        return
 
+    # --------------------------------------------------------
+    # UTILISATEUR
+    # Recherche d'une offre
+    # --------------------------------------------------------
+
+    await rechercher_demande(
+        update,
+        context
+    )
+
+
+# ============================================================
+# SITE WEB - ACCUEIL
+# ============================================================
 
 @app.route("/")
 def accueil():
@@ -1638,8 +1580,7 @@ def accueil():
     if recherche:
 
         remunerated = (
-            categorie
-            == "stage_remunere"
+            categorie == "stage_remunere"
         )
 
         try:
@@ -1663,8 +1604,9 @@ def accueil():
             )
 
         except Exception as error:
-            logger.exception(
-                "Erreur Adzuna accueil: %s",
+
+            logger.warning(
+                "Erreur Adzuna : %s",
                 error
             )
 
@@ -1708,10 +1650,12 @@ def accueil():
             SELECT *
             FROM offres
             WHERE categorie IN
-            ('Emploi',
-             'Bourse',
-             'Bourses',
-             'Stage rémunéré')
+            (
+                'Emploi',
+                'Bourse',
+                'Bourses',
+                'Stage rémunéré'
+            )
             ORDER BY id DESC
             LIMIT 100
         """
@@ -1732,6 +1676,10 @@ def accueil():
     )
 
 
+# ============================================================
+# ADMIN WEB
+# ============================================================
+
 @app.route(
     "/admin/login",
     methods=["GET", "POST"]
@@ -1747,10 +1695,7 @@ def admin_login():
             ""
         ).strip()
 
-        if (
-            ADMIN_KEY
-            and key == ADMIN_KEY
-        ):
+        if ADMIN_KEY and key == ADMIN_KEY:
 
             session["admin"] = True
 
@@ -1914,37 +1859,12 @@ def modifier(offre_id):
 
 @app.route("/health")
 def health():
+
     return "OK", 200
 
 
-@app.route("/telegram-status")
-def telegram_status():
-
-    if not BOT_TOKEN:
-        return {
-            "telegram": "disabled",
-            "reason": "BOT_TOKEN manquant"
-        }, 503
-
-    if telegram_thread is None:
-        return {
-            "telegram": "not_started"
-        }, 503
-
-    if telegram_thread.is_alive():
-        return {
-            "telegram": "running",
-            "channel": CHANNEL_ID
-        }, 200
-
-    return {
-        "telegram": "stopped",
-        "channel": CHANNEL_ID
-    }, 503
-
-
 # ============================================================
-# PAGE D'ACCUEIL
+# HTML DU SITE
 # ============================================================
 
 HTML_HOME = """
@@ -2027,8 +1947,7 @@ a {
 
 <header>
 
-<a class="admin"
-href="/admin/login">
+<a class="admin" href="/admin/login">
 ⚙️ Administration
 </a>
 
@@ -2037,22 +1956,19 @@ href="/admin/login">
 </h1>
 
 <p>
-💼 Emplois • 🎓 Bourses •
-💰 Stages rémunérés
+💼 Emplois • 🎓 Bourses • 💰 Stages rémunérés
 </p>
 
 <p>
-Trouvez des opportunités
-internationales et locales.
+Trouvez des opportunités internationales
+et locales selon les offres disponibles.
 </p>
 
 <p>
-📢 Telegram :
-<a
-href="https://t.me/canalRM24"
-target="_blank"
->
-RESEAU MONDIAL
+📢
+<a href="https://t.me/canalRM24"
+target="_blank">
+Rejoindre notre canal Telegram
 </a>
 </p>
 
@@ -2074,9 +1990,7 @@ placeholder="Exemple : informatique, ingénieur..."
 
 <option
 value="{{ code }}"
-{% if code == country %}
-selected
-{% endif %}
+{% if code == country %}selected{% endif %}
 >
 {{ name }}
 </option>
@@ -2087,48 +2001,33 @@ selected
 
 <select name="categorie">
 
-<option
-value="emploi"
-{% if categorie == "emploi" %}
-selected
-{% endif %}
+<option value="emploi"
+{% if categorie == "emploi" %}selected{% endif %}
 >
 💼 Emplois
 </option>
 
-<option
-value="bourse"
-{% if categorie == "bourse" %}
-selected
-{% endif %}
+<option value="bourse"
+{% if categorie == "bourse" %}selected{% endif %}
 >
 🎓 Bourses
 </option>
 
-<option
-value="stage_remunere"
-{% if categorie == "stage_remunere" %}
-selected
-{% endif %}
+<option value="stage_remunere"
+{% if categorie == "stage_remunere" %}selected{% endif %}
 >
 💰 Stages rémunérés
 </option>
 
-<option
-value="tous"
-{% if categorie == "tous" %}
-selected
-{% endif %}
+<option value="tous"
+{% if categorie == "tous" %}selected{% endif %}
 >
 Toutes les catégories
 </option>
 
 </select>
 
-<button
-name="search"
-value="1"
->
+<button name="search" value="1">
 🔎 Rechercher
 </button>
 
@@ -2147,18 +2046,15 @@ value="1"
 </h2>
 
 <p>
-🏢 <b>
-{{ offre["entreprise"] }}
-</b>
+🏢
+<b>{{ offre["entreprise"] }}</b>
 </p>
 
 <p>
 🌍 {{ offre["pays"] }}
 
 {% if offre["localisation"] %}
-
 — {{ offre["localisation"] }}
-
 {% endif %}
 
 </p>
@@ -2167,8 +2063,7 @@ value="1"
 📂 {{ offre["categorie"] }}
 </p>
 
-{% if offre["salaire_min"]
-or offre["salaire_max"] %}
+{% if offre["salaire_min"] or offre["salaire_max"] %}
 
 <p>
 💰 Salaire :
@@ -2208,13 +2103,12 @@ rel="noopener noreferrer"
 <div class="card">
 
 <h2>
-🔎 Aucune offre enregistrée
-pour cette recherche.
+🔎 Aucune offre enregistrée pour cette recherche.
 </h2>
 
 <p>
-Effectuez une recherche pour
-récupérer les offres disponibles.
+Effectuez une recherche pour récupérer
+les offres disponibles.
 </p>
 
 </div>
@@ -2229,12 +2123,9 @@ récupérer les offres disponibles.
 """
 
 
-# ============================================================
-# LOGIN ADMIN
-# ============================================================
-
 HTML_LOGIN = """
 <!doctype html>
+
 <html lang="fr">
 
 <head>
@@ -2313,12 +2204,9 @@ required
 """
 
 
-# ============================================================
-# ADMIN
-# ============================================================
-
 HTML_ADMIN = """
 <!doctype html>
+
 <html lang="fr">
 
 <head>
@@ -2387,8 +2275,7 @@ Déconnexion
 </h1>
 
 <p>
-{{ offres|length }}
-offres affichées.
+{{ offres|length }} offres affichées.
 </p>
 
 {% for offre in offres %}
@@ -2411,20 +2298,6 @@ offres affichées.
 📂 {{ offre["categorie"] }}
 </p>
 
-{% if offre["telegram_message_id"] %}
-
-<p>
-📢 Publiée dans Telegram
-</p>
-
-{% else %}
-
-<p>
-⏳ Pas encore publiée dans Telegram
-</p>
-
-{% endif %}
-
 {% if offre["lien"] %}
 
 <p>
@@ -2442,9 +2315,7 @@ Lien de candidature
 
 {% endif %}
 
-<a
-href="/admin/modifier/{{ offre["id"] }}"
->
+<a href="/admin/modifier/{{ offre["id"] }}">
 ✏️ Modifier
 </a>
 
@@ -2475,12 +2346,9 @@ type="submit"
 """
 
 
-# ============================================================
-# MODIFICATION
-# ============================================================
-
 HTML_EDIT = """
 <!doctype html>
+
 <html lang="fr">
 
 <head>
@@ -2579,8 +2447,7 @@ Catégorie
 
 <select name="categorie">
 
-<option
-value="Emploi"
+<option value="Emploi"
 {% if offre["categorie"] == "Emploi" %}
 selected
 {% endif %}
@@ -2588,8 +2455,7 @@ selected
 💼 Emploi
 </option>
 
-<option
-value="Bourse"
+<option value="Bourse"
 {% if offre["categorie"] == "Bourse" %}
 selected
 {% endif %}
@@ -2597,8 +2463,7 @@ selected
 🎓 Bourse
 </option>
 
-<option
-value="Stage rémunéré"
+<option value="Stage rémunéré"
 {% if offre["categorie"] == "Stage rémunéré" %}
 selected
 {% endif %}
@@ -2644,15 +2509,10 @@ value="{{ offre["lien"] or "" }}"
 
 
 # ============================================================
-# DÉMARRAGE FLASK
+# LANCEMENT FLASK + BOT
 # ============================================================
 
-# IMPORTANT :
-# Gunicorn importe "app:app".
-# Le bot est donc démarré automatiquement
-# lorsque le module est chargé.
-
-start_telegram_bot()
+demarrer_bot_en_arriere_plan()
 
 
 if __name__ == "__main__":
