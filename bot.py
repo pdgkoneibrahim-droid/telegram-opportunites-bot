@@ -11,7 +11,6 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    LabeledPrice,
 )
 
 from telegram.constants import ParseMode
@@ -21,7 +20,6 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
-    PreCheckoutQueryHandler,
     ContextTypes,
     filters,
 )
@@ -61,7 +59,15 @@ CHANNEL_USERNAME = os.getenv(
     "canalRM24"
 ).strip().lstrip("@")
 
-CANDIDATURE_STARS = 100
+
+# ============================================================
+# VÉRIFICATION
+# ============================================================
+
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "BOT_TOKEN absent dans les variables d'environnement."
+    )
 
 
 # ============================================================
@@ -77,16 +83,6 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# VÉRIFICATION CONFIGURATION
-# ============================================================
-
-if not BOT_TOKEN:
-    raise RuntimeError(
-        "BOT_TOKEN absent dans les variables d'environnement."
-    )
-
-
-# ============================================================
 # FLASK POUR RENDER
 # ============================================================
 
@@ -95,23 +91,31 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
+
     return "BOT OPPORTUNITÉS ACTIF"
 
 
 @app.route("/health")
 def health():
+
     return "OK"
 
 
 def run_flask():
+
     try:
+
         app.run(
             host="0.0.0.0",
             port=PORT,
             threaded=True,
         )
+
     except Exception:
-        logger.exception("Erreur Flask")
+
+        logger.exception(
+            "Erreur Flask"
+        )
 
 
 # ============================================================
@@ -122,6 +126,7 @@ db_lock = threading.RLock()
 
 
 def get_db():
+
     conn = sqlite3.connect(
         DB_PATH,
         timeout=30,
@@ -142,21 +147,31 @@ def init_db():
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS offres (
+
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+
                 categorie TEXT NOT NULL,
+
                 titre TEXT NOT NULL,
+
                 description TEXT DEFAULT '',
+
                 lien TEXT DEFAULT '',
-                telegram_message_id INTEGER,
+
+                telegram_message_id INTEGER UNIQUE,
+
                 date_creation TEXT NOT NULL
             )
             """
         )
 
         conn.commit()
+
         conn.close()
 
-    logger.info("Base SQLite prête.")
+    logger.info(
+        "Base SQLite prête."
+    )
 
 
 def ajouter_offre(
@@ -171,6 +186,57 @@ def ajouter_offre(
 
         conn = get_db()
 
+        # ----------------------------------------------------
+        # SI LA PUBLICATION EXISTE DÉJÀ
+        # ----------------------------------------------------
+
+        if telegram_message_id is not None:
+
+            existante = conn.execute(
+                """
+                SELECT id
+                FROM offres
+                WHERE telegram_message_id = ?
+                """,
+                (
+                    telegram_message_id,
+                ),
+            ).fetchone()
+
+            if existante:
+
+                conn.execute(
+                    """
+                    UPDATE offres
+
+                    SET categorie = ?,
+                        titre = ?,
+                        description = ?,
+                        lien = ?
+
+                    WHERE telegram_message_id = ?
+                    """,
+                    (
+                        categorie,
+                        titre,
+                        description,
+                        lien,
+                        telegram_message_id,
+                    ),
+                )
+
+                conn.commit()
+
+                offre_id = existante["id"]
+
+                conn.close()
+
+                return offre_id
+
+        # ----------------------------------------------------
+        # NOUVELLE OFFRE
+        # ----------------------------------------------------
+
         cursor = conn.execute(
             """
             INSERT INTO offres
@@ -182,6 +248,7 @@ def ajouter_offre(
                 telegram_message_id,
                 date_creation
             )
+
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
@@ -190,37 +257,19 @@ def ajouter_offre(
                 description,
                 lien,
                 telegram_message_id,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(
+                    timezone.utc
+                ).isoformat(),
             ),
         )
 
         offre_id = cursor.lastrowid
 
         conn.commit()
+
         conn.close()
 
         return offre_id
-
-
-def offre_par_id(offre_id):
-
-    with db_lock:
-
-        conn = get_db()
-
-        resultat = conn.execute(
-            """
-            SELECT *
-            FROM offres
-            WHERE id = ?
-            LIMIT 1
-            """,
-            (offre_id,),
-        ).fetchone()
-
-        conn.close()
-
-        return resultat
 
 
 def offres_categorie(
@@ -235,9 +284,13 @@ def offres_categorie(
         resultats = conn.execute(
             """
             SELECT *
+
             FROM offres
+
             WHERE categorie = ?
+
             ORDER BY id DESC
+
             LIMIT ?
             """,
             (
@@ -268,9 +321,11 @@ def offres_recherche(
     ]
 
     if not mots:
+
         return []
 
     conditions = []
+
     valeurs = []
 
     for mot in mots:
@@ -279,8 +334,10 @@ def offres_recherche(
             """
             (
                 LOWER(titre) LIKE ?
-                OR LOWER(description) LIKE ?
-                OR LOWER(categorie) LIKE ?
+
+                OR
+
+                LOWER(description) LIKE ?
             )
             """
         )
@@ -291,19 +348,24 @@ def offres_recherche(
             [
                 valeur,
                 valeur,
-                valeur,
             ]
         )
 
     sql = f"""
         SELECT *
+
         FROM offres
+
         WHERE {" OR ".join(conditions)}
+
         ORDER BY id DESC
+
         LIMIT ?
     """
 
-    valeurs.append(limite)
+    valeurs.append(
+        limite
+    )
 
     with db_lock:
 
@@ -323,7 +385,7 @@ def offres_recherche(
 # UTILITAIRES
 # ============================================================
 
-def admin(update):
+def is_admin(update):
 
     user = update.effective_user
 
@@ -338,9 +400,9 @@ def safe_text(
     maximum=3500,
 ):
 
-    value = str(value or "")
-
-    return value[:maximum]
+    return str(
+        value or ""
+    )[:maximum]
 
 
 def html_safe(
@@ -361,27 +423,17 @@ def html_safe(
     )
 
 
-# ============================================================
-# LIENS
-# ============================================================
+def bot_link():
 
-def bot_link(start_parameter=None):
-
-    base = (
+    return (
         f"https://t.me/{BOT_USERNAME}"
     )
-
-    if start_parameter:
-        return (
-            f"{base}?start={start_parameter}"
-        )
-
-    return base
 
 
 def channel_link():
 
     if not CHANNEL_USERNAME:
+
         return ""
 
     return (
@@ -391,9 +443,12 @@ def channel_link():
 
 def clean_link(value):
 
-    value = str(value or "").strip()
+    value = str(
+        value or ""
+    ).strip()
 
     if not value:
+
         return ""
 
     if re.match(
@@ -401,10 +456,16 @@ def clean_link(value):
         value,
         re.IGNORECASE,
     ):
+
         return ""
 
-    if value.startswith("t.me/"):
-        value = "https://" + value
+    if value.startswith(
+        "t.me/"
+    ):
+
+        value = (
+            "https://" + value
+        )
 
     if value.startswith("@"):
 
@@ -414,6 +475,7 @@ def clean_link(value):
             r"[A-Za-z0-9_]{5,32}",
             username,
         ):
+
             return (
                 f"https://t.me/{username}"
             )
@@ -431,9 +493,19 @@ def clean_link(value):
     return ""
 
 
+# ============================================================
+# DÉTECTION DES CATÉGORIES
+# ============================================================
+
 def detect_category(text):
 
-    text = str(text or "").lower()
+    text = str(
+        text or ""
+    ).lower()
+
+    # --------------------------------------------------------
+    # BOURSES
+    # --------------------------------------------------------
 
     if any(
         mot in text
@@ -441,24 +513,45 @@ def detect_category(text):
             "bourse",
             "bourses",
             "scholarship",
+            "scholarships",
             "fellowship",
+            "fellowships",
             "bourse d'étude",
             "bourse d'études",
+            "bourse universitaire",
+            "études",
+            "study",
         )
     ):
+
         return "BOURSE"
+
+    # --------------------------------------------------------
+    # STAGES RÉMUNÉRÉS
+    # --------------------------------------------------------
 
     if any(
         mot in text
         for mot in (
-            "stage",
-            "stages",
-            "stagiaire",
-            "internship",
-            "intern",
+            "stage rémunéré",
+            "stage remunere",
+            "stages rémunérés",
+            "paid internship",
+            "paid internships",
+            "paid intern",
+            "stipend",
+            "stipendié",
+            "stipend",
+            "rémunéré",
+            "remunere",
         )
     ):
-        return "STAGE"
+
+        return "STAGE RÉMUNÉRÉ"
+
+    # --------------------------------------------------------
+    # EMPLOIS
+    # --------------------------------------------------------
 
     if any(
         mot in text
@@ -471,66 +564,72 @@ def detect_category(text):
             "recrute",
             "hiring",
             "career",
+            "careers",
             "poste",
             "postes",
             "embauche",
+            "recruitment",
+            "vacancy",
+            "vacancies",
         )
     ):
+
         return "EMPLOI"
+
+    # --------------------------------------------------------
+    # STAGE
+    # --------------------------------------------------------
+
+    if any(
+        mot in text
+        for mot in (
+            "stage",
+            "stages",
+            "stagiaire",
+            "internship",
+            "internships",
+            "intern",
+            "trainee",
+            "traineeship",
+        )
+    ):
+
+        return "STAGE RÉMUNÉRÉ"
 
     return None
 
 
 # ============================================================
-# MESSAGE ASSISTANT
-# ============================================================
-
-def assistant_message():
-
-    return (
-        "🤖 <b>RÉSEAU MONDIAL — ASSISTANT OPPORTUNITÉS</b>\n\n"
-        "Bienvenue !\n\n"
-        "Je peux rechercher les opportunités "
-        "publiées dans notre base :\n\n"
-        "💼 <b>Emploi</b>\n"
-        "🎓 <b>Stage</b>\n"
-        "🎓 <b>Bourse</b>\n\n"
-        "🌍 International et local selon les offres disponibles.\n\n"
-        "Écrivez simplement ce que vous recherchez.\n\n"
-        "<b>Opportunités disponibles :</b>\n"
-        "💼 Emplois\n"
-        "🎓 Bourses d'études\n"
-        "💰 Stages rémunérés"
-    )
-
-
-# ============================================================
-# MENU
+# MENU PRINCIPAL
 # ============================================================
 
 def main_menu():
 
     boutons = [
+
         [
             InlineKeyboardButton(
                 "💼 EMPLOI",
                 callback_data="EMPLOI",
             ),
-            InlineKeyboardButton(
-                "🎓 STAGE",
-                callback_data="STAGE",
-            ),
-        ],
-        [
+
             InlineKeyboardButton(
                 "🎓 BOURSE",
                 callback_data="BOURSE",
             ),
         ],
+
+        [
+            InlineKeyboardButton(
+                "💰 STAGES RÉMUNÉRÉS",
+                callback_data="STAGE",
+            )
+        ],
+
         [
             InlineKeyboardButton(
                 "🤖 DEMANDER UNE OFFRE",
-                url=bot_link("demande"),
+                url=bot_link(),
             )
         ],
     ]
@@ -554,7 +653,7 @@ def main_menu():
 
 
 # ============================================================
-# START
+# /START
 # ============================================================
 
 async def start(
@@ -563,31 +662,36 @@ async def start(
 ):
 
     if update.message is None:
-        return
-
-    if (
-        context.args
-        and context.args[0].lower() == "demande"
-    ):
-
-        await update.message.reply_text(
-            assistant_message(),
-            parse_mode=ParseMode.HTML,
-            reply_markup=main_menu(),
-        )
 
         return
+
+    texte = (
+        "<b>🤖 RÉSEAU MONDIAL — ASSISTANT OPPORTUNITÉS</b>\n\n"
+
+        "Bienvenue !\n\n"
+
+        "Je peux rechercher les opportunités "
+        "publiées dans notre base :\n\n"
+
+        "💼 <b>Emploi</b>\n"
+        "🎓 <b>Bourse</b>\n"
+        "💰 <b>Stages rémunérés</b>\n\n"
+
+        "🌍 International et local selon les offres disponibles.\n\n"
+
+        "Écrivez simplement ce que vous recherchez."
+    )
 
     await update.message.reply_text(
-        assistant_message(),
+        texte,
         parse_mode=ParseMode.HTML,
         reply_markup=main_menu(),
     )
 
 
 async def aide(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context,
 ):
 
     await start(
@@ -597,7 +701,7 @@ async def aide(
 
 
 # ============================================================
-# AFFICHAGE OFFRE
+# AFFICHER UNE OFFRE
 # ============================================================
 
 async def send_offer(
@@ -607,7 +711,7 @@ async def send_offer(
 
     categorie = html_safe(
         offer["categorie"],
-        50,
+        80,
     )
 
     titre = html_safe(
@@ -620,27 +724,37 @@ async def send_offer(
         2500,
     )
 
-    offre_id = int(
-        offer["id"]
+    lien = clean_link(
+        offer["lien"]
     )
 
     texte = (
         f"📂 <b>{categorie}</b>\n\n"
+
         f"📌 <b>{titre}</b>\n\n"
+
         f"{description}\n\n"
+
         "👇 <b>Pour plus d'informations :</b>"
     )
 
-    boutons = [
-        InlineKeyboardButton(
-            "👉 CANDIDATER • 100 ⭐",
-            callback_data=f"CANDIDATER:{offre_id}",
-        ),
+    boutons = []
+
+    if lien:
+
+        boutons.append(
+            InlineKeyboardButton(
+                "👉 CANDIDATER",
+                url=lien,
+            )
+        )
+
+    boutons.append(
         InlineKeyboardButton(
             "🤖 DEMANDER UNE OFFRE",
-            url=bot_link("demande"),
-        ),
-    ]
+            url=bot_link(),
+        )
+    )
 
     canal = channel_link()
 
@@ -658,310 +772,20 @@ async def send_offer(
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup(
-            [boutons]
+            [
+                boutons
+            ]
         ),
     )
 
 
 # ============================================================
-# CANDIDATURE — 100 STARS
-# ============================================================
-
-async def candidature_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    query = update.callback_query
-
-    await query.answer()
-
-    try:
-
-        offre_id = int(
-            query.data.split(
-                ":",
-                1,
-            )[1]
-        )
-
-    except (
-        ValueError,
-        IndexError,
-    ):
-
-        await query.message.reply_text(
-            "⚠️ Cette candidature est invalide."
-        )
-
-        return
-
-    offre = offre_par_id(
-        offre_id
-    )
-
-    if not offre:
-
-        await query.message.reply_text(
-            "⚠️ Cette opportunité n'est plus disponible."
-        )
-
-        return
-
-    lien = clean_link(
-        offre["lien"]
-    )
-
-    if not lien:
-
-        await query.message.reply_text(
-            "⚠️ Aucun lien de candidature "
-            "n'est disponible pour cette offre."
-        )
-
-        return
-
-    titre = html_safe(
-        offre["titre"],
-        700,
-    )
-
-    try:
-
-        await context.bot.send_invoice(
-            chat_id=query.from_user.id,
-            title="Accès à la candidature",
-            description=(
-                f"Accès au lien de candidature : "
-                f"{offre['titre']}"
-            )[:255],
-            payload=f"candidature:{offre_id}",
-            provider_token="",
-            currency="XTR",
-            prices=[
-                LabeledPrice(
-                    "Accès candidature",
-                    CANDIDATURE_STARS,
-                )
-            ],
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Création facture candidature"
-        )
-
-        await query.message.reply_text(
-            "⚠️ Impossible de créer le paiement "
-            "pour le moment. Veuillez réessayer."
-        )
-
-
-# ============================================================
-# PRÉ-CHECKOUT
-# ============================================================
-
-async def precheckout_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    query = update.pre_checkout_query
-
-    payload = query.invoice_payload
-
-    if not payload.startswith(
-        "candidature:"
-    ):
-
-        await query.answer(
-            ok=False,
-            error_message="Commande non reconnue.",
-        )
-
-        return
-
-    try:
-
-        offre_id = int(
-            payload.split(
-                ":",
-                1,
-            )[1]
-        )
-
-    except (
-        ValueError,
-        IndexError,
-    ):
-
-        await query.answer(
-            ok=False,
-            error_message=(
-                "Référence de candidature invalide."
-            ),
-        )
-
-        return
-
-    offre = offre_par_id(
-        offre_id
-    )
-
-    if not offre:
-
-        await query.answer(
-            ok=False,
-            error_message=(
-                "Cette opportunité n'est plus disponible."
-            ),
-        )
-
-        return
-
-    if query.currency != "XTR":
-
-        await query.answer(
-            ok=False,
-            error_message=(
-                "Le paiement doit être effectué "
-                "en Telegram Stars."
-            ),
-        )
-
-        return
-
-    if query.total_amount != CANDIDATURE_STARS:
-
-        await query.answer(
-            ok=False,
-            error_message=(
-                "Le montant de la commande est incorrect."
-            ),
-        )
-
-        return
-
-    await query.answer(
-        ok=True
-    )
-
-
-# ============================================================
-# PAIEMENT CONFIRMÉ
-# ============================================================
-
-async def successful_payment_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if update.message is None:
-        return
-
-    payment = update.message.successful_payment
-
-    if payment is None:
-        return
-
-    payload = payment.invoice_payload
-
-    if not payload.startswith(
-        "candidature:"
-    ):
-        return
-
-    try:
-
-        offre_id = int(
-            payload.split(
-                ":",
-                1,
-            )[1]
-        )
-
-    except (
-        ValueError,
-        IndexError,
-    ):
-
-        await update.message.reply_text(
-            "⚠️ Paiement reçu, mais la référence "
-            "de candidature est invalide."
-        )
-
-        return
-
-    offre = offre_par_id(
-        offre_id
-    )
-
-    if not offre:
-
-        await update.message.reply_text(
-            "✅ <b>Paiement confirmé.</b>\n\n"
-            "⚠️ Cette offre n'est malheureusement "
-            "plus disponible.",
-            parse_mode=ParseMode.HTML,
-        )
-
-        return
-
-    lien = clean_link(
-        offre["lien"]
-    )
-
-    if not lien:
-
-        await update.message.reply_text(
-            "✅ <b>Paiement confirmé.</b>\n\n"
-            "⚠️ Aucun lien de candidature "
-            "n'est actuellement disponible.",
-            parse_mode=ParseMode.HTML,
-        )
-
-        return
-
-    titre = html_safe(
-        offre["titre"],
-        700,
-    )
-
-    lien_html = html_safe(
-        lien,
-        1500,
-    )
-
-    await update.message.reply_text(
-        "✅ <b>PAIEMENT CONFIRMÉ</b>\n\n"
-        f"📌 <b>{titre}</b>\n\n"
-        "Votre accès est maintenant activé.\n\n"
-        "🔗 <b>LIEN OFFICIEL DE CANDIDATURE :</b>\n"
-        f"{lien_html}\n\n"
-        "⚠️ Vérifiez toujours les informations "
-        "sur le site officiel avant de transmettre "
-        "vos documents.",
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-    )
-
-    logger.info(
-        "Paiement candidature confirmé | "
-        "user=%s | offre=%s | stars=%s",
-        update.effective_user.id,
-        offre_id,
-        payment.total_amount,
-    )
-
-
-# ============================================================
-# CATÉGORIE
+# BOUTONS CATÉGORIES
 # ============================================================
 
 async def category_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context,
 ):
 
     query = update.callback_query
@@ -986,8 +810,8 @@ async def category_callback(
         return
 
     await query.message.reply_text(
-        f"🔎 {len(resultats)} opportunité(s) "
-        f"{categorie} trouvée(s)."
+        f"🔎 {len(resultats)} "
+        f"opportunité(s) {categorie} trouvée(s)."
     )
 
     for offre in resultats:
@@ -1007,15 +831,16 @@ async def category_callback(
 
 
 # ============================================================
-# RECHERCHE
+# RECHERCHE UTILISATEUR
 # ============================================================
 
 async def user_search(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context,
 ):
 
     if update.message is None:
+
         return
 
     texte = (
@@ -1023,6 +848,7 @@ async def user_search(
     ).strip()
 
     if not texte:
+
         return
 
     categorie = detect_category(
@@ -1046,10 +872,8 @@ async def user_search(
     if resultats:
 
         await update.message.reply_text(
-            f"🤖 <b>ASSISTANT RÉSEAU MONDIAL</b>\n\n"
-            f"🔎 {len(resultats)} opportunité(s) "
-            "correspondant à votre demande :",
-            parse_mode=ParseMode.HTML,
+            f"🔎 {len(resultats)} "
+            "opportunité(s) trouvée(s)."
         )
 
         for offre in resultats:
@@ -1070,30 +894,33 @@ async def user_search(
         return
 
     await update.message.reply_text(
-        "🤖 <b>ASSISTANT RÉSEAU MONDIAL</b>\n\n"
-        "Je n'ai trouvé aucune opportunité "
-        "correspondant à votre demande parmi "
-        "les offres actuellement publiées.\n\n"
-        "Vous pouvez essayer une autre recherche "
-        "ou consulter le canal.",
-        parse_mode=ParseMode.HTML,
+        "🔎 Aucune opportunité correspondant "
+        "à votre recherche n'est actuellement "
+        "enregistrée.\n\n"
+
+        "Essayez par exemple :\n\n"
+
+        "💼 emploi informatique\n"
+        "🎓 bourse Canada\n"
+        "💰 stage rémunéré informatique",
         reply_markup=main_menu(),
     )
 
 
 # ============================================================
-# AJOUTER UNE OFFRE
+# AJOUTER UNE OFFRE MANUELLEMENT
 # ============================================================
 
 async def ajouter(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context,
 ):
 
     if update.message is None:
+
         return
 
-    if not admin(update):
+    if not is_admin(update):
 
         await update.message.reply_text(
             "⛔ Cette commande est réservée "
@@ -1125,8 +952,14 @@ async def ajouter(
 
             await update.message.reply_text(
                 "ℹ️ Utilisez :\n\n"
-                "/ajouter STAGE | Titre | "
-                "Description | Lien"
+
+                "/ajouter EMPLOI | Titre | "
+                "Description | Lien\n\n"
+
+                "Catégories :\n"
+                "EMPLOI\n"
+                "BOURSE\n"
+                "STAGE RÉMUNÉRÉ"
             )
 
             return
@@ -1149,17 +982,18 @@ async def ajouter(
                 parties[3]
             )
 
+        if categorie == "STAGE":
+
+            categorie = "STAGE RÉMUNÉRÉ"
+
         if categorie not in (
             "EMPLOI",
-            "STAGE",
             "BOURSE",
+            "STAGE RÉMUNÉRÉ",
         ):
 
             await update.message.reply_text(
-                "ℹ️ Choisissez :\n\n"
-                "💼 EMPLOI\n"
-                "🎓 STAGE\n"
-                "🎓 BOURSE"
+                "⛔ Catégorie invalide."
             )
 
             return
@@ -1167,7 +1001,7 @@ async def ajouter(
         if not titre:
 
             await update.message.reply_text(
-                "ℹ️ Ajoutez le titre de l'offre."
+                "⛔ Le titre est obligatoire."
             )
 
             return
@@ -1175,8 +1009,8 @@ async def ajouter(
         if not description:
 
             description = (
-                "Consultez les informations "
-                "disponibles pour cette opportunité."
+                "Informations disponibles "
+                "pour cette opportunité."
             )
 
         offre_id = ajouter_offre(
@@ -1184,91 +1018,14 @@ async def ajouter(
             titre=titre,
             description=description,
             lien=lien,
-            telegram_message_id=None,
         )
-
-        categorie_html = html_safe(
-            categorie,
-            50,
-        )
-
-        titre_html = html_safe(
-            titre,
-            700,
-        )
-
-        description_html = html_safe(
-            description,
-            2500,
-        )
-
-        canal_text = (
-            "📢 <b>NOUVELLE OPPORTUNITÉ</b>\n\n"
-            f"📂 <b>{categorie_html}</b>\n\n"
-            f"📌 <b>{titre_html}</b>\n\n"
-            f"{description_html}\n\n"
-            "👇 <b>Pour plus d'informations :</b>"
-        )
-
-        boutons = [
-            InlineKeyboardButton(
-                "👉 CANDIDATER • 100 ⭐",
-                callback_data=f"CANDIDATER:{offre_id}",
-            ),
-            InlineKeyboardButton(
-                "🤖 DEMANDER UNE OFFRE",
-                url=bot_link("demande"),
-            ),
-        ]
-
-        canal = channel_link()
-
-        if canal:
-
-            boutons.append(
-                InlineKeyboardButton(
-                    "📢 VOIR LE CANAL",
-                    url=canal,
-                )
-            )
-
-        publication = await context.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=canal_text,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-            reply_markup=InlineKeyboardMarkup(
-                [boutons]
-            ),
-        )
-
-        with db_lock:
-
-            conn = get_db()
-
-            conn.execute(
-                """
-                UPDATE offres
-                SET telegram_message_id = ?
-                WHERE id = ?
-                """,
-                (
-                    publication.message_id,
-                    offre_id,
-                ),
-            )
-
-            conn.commit()
-            conn.close()
 
         await update.message.reply_text(
-            "✅ <b>OFFRE PUBLIÉE</b>\n\n"
-            f"📂 {categorie_html}\n"
-            f"📌 {titre_html}\n"
-            f"🆔 Référence : <b>{offre_id}</b>\n\n"
-            "📢 Elle est maintenant disponible "
-            "dans le canal et dans la recherche "
-            "du bot.",
+            "✅ <b>OFFRE ENREGISTRÉE</b>\n\n"
+
+            f"📂 {html_safe(categorie)}\n"
+            f"📌 {html_safe(titre)}\n"
+            f"🆔 Référence : <b>{offre_id}</b>",
             parse_mode=ParseMode.HTML,
         )
 
@@ -1279,26 +1036,167 @@ async def ajouter(
         )
 
         await update.message.reply_text(
-            "⚠️ Le service est momentanément "
-            "indisponible pour cette opération.\n\n"
-            "Vérifiez que le bot est administrateur "
-            "du canal."
+            "⚠️ Impossible d'enregistrer l'offre."
         )
 
 
 # ============================================================
-# TEST CANAL
+# SYNCHRONISATION AUTOMATIQUE DU CANAL
+# ============================================================
+
+async def canal_post_automatique(
+    update,
+    context,
+):
+
+    post = (
+        update.channel_post
+        or update.edited_channel_post
+    )
+
+    if post is None:
+
+        return
+
+    # --------------------------------------------------------
+    # VÉRIFICATION DU CANAL
+    # --------------------------------------------------------
+
+    username = (
+        post.chat.username or ""
+    ).lower()
+
+    configured_username = (
+        CHANNEL_USERNAME or ""
+    ).lower()
+
+    canal_correct = (
+        username == configured_username
+        or str(post.chat.id) == str(CHANNEL_ID)
+    )
+
+    if not canal_correct:
+
+        logger.warning(
+            "Publication ignorée : mauvais canal."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # RÉCUPÉRER LE TEXTE
+    # --------------------------------------------------------
+
+    texte = (
+        post.text
+        or post.caption
+        or ""
+    ).strip()
+
+    if not texte:
+
+        logger.info(
+            "Publication sans texte ignorée."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # DÉTECTION CATÉGORIE
+    # --------------------------------------------------------
+
+    categorie = detect_category(
+        texte
+    )
+
+    # Si aucune catégorie évidente,
+    # classement par défaut en EMPLOI.
+
+    if categorie is None:
+
+        categorie = "EMPLOI"
+
+    # --------------------------------------------------------
+    # TITRE
+    # --------------------------------------------------------
+
+    lignes = [
+        ligne.strip()
+        for ligne in texte.splitlines()
+        if ligne.strip()
+    ]
+
+    if lignes:
+
+        titre = lignes[0][:700]
+
+    else:
+
+        titre = "Nouvelle opportunité"
+
+    # --------------------------------------------------------
+    # DESCRIPTION
+    # --------------------------------------------------------
+
+    description = texte[:3500]
+
+    # --------------------------------------------------------
+    # EXTRACTION DU LIEN
+    # --------------------------------------------------------
+
+    liens = re.findall(
+        r"https?://[^\s<>]+",
+        texte,
+        flags=re.IGNORECASE,
+    )
+
+    lien = ""
+
+    if liens:
+
+        lien = clean_link(
+            liens[0].rstrip(
+                ".,;)"
+            )
+        )
+
+    # --------------------------------------------------------
+    # ENREGISTREMENT / MISE À JOUR
+    # --------------------------------------------------------
+
+    offre_id = ajouter_offre(
+        categorie=categorie,
+        titre=titre,
+        description=description,
+        lien=lien,
+        telegram_message_id=post.message_id,
+    )
+
+    logger.info(
+        "✅ CANAL → SITE | "
+        "offre=%s | "
+        "catégorie=%s | "
+        "message=%s",
+        offre_id,
+        categorie,
+        post.message_id,
+    )
+
+
+# ============================================================
+# TEST DU CANAL
 # ============================================================
 
 async def testcanal(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context,
 ):
 
     if update.message is None:
+
         return
 
-    if not admin(update):
+    if not is_admin(update):
 
         await update.message.reply_text(
             "⛔ Accès réservé à l'administrateur."
@@ -1310,17 +1208,20 @@ async def testcanal(
 
         await context.bot.send_message(
             chat_id=CHANNEL_ID,
+
             text=(
                 "✅ <b>TEST DU CANAL</b>\n\n"
                 "🤖 Le bot est connecté au canal."
             ),
+
             parse_mode=ParseMode.HTML,
+
             reply_markup=InlineKeyboardMarkup(
                 [
                     [
                         InlineKeyboardButton(
                             "🤖 DEMANDER UNE OFFRE",
-                            url=bot_link("demande"),
+                            url=bot_link(),
                         )
                     ]
                 ]
@@ -1328,8 +1229,8 @@ async def testcanal(
         )
 
         await update.message.reply_text(
-            "✅ Test effectué : le message "
-            "a été envoyé dans le canal."
+            "✅ Test réussi : le bot peut "
+            "publier dans le canal."
         )
 
     except Exception:
@@ -1339,24 +1240,25 @@ async def testcanal(
         )
 
         await update.message.reply_text(
-            "⚠️ Le bot ne peut pas publier "
-            "dans le canal actuellement."
+            "⚠️ Impossible de publier dans le canal.\n\n"
+            "Vérifie que le bot est administrateur."
         )
 
 
 # ============================================================
-# PUBLIER LE BOUTON DU BOT
+# PUBLICATION DU BOUTON BOT
 # ============================================================
 
 async def publier_bot(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context,
 ):
 
     if update.message is None:
+
         return
 
-    if not admin(update):
+    if not is_admin(update):
 
         await update.message.reply_text(
             "⛔ Accès réservé à l'administrateur."
@@ -1366,9 +1268,11 @@ async def publier_bot(
 
     texte = (
         "🤖 <b>BESOIN D'UNE OPPORTUNITÉ ?</b>\n\n"
+
         "💼 Emploi\n"
-        "🎓 Stage\n"
-        "🎓 Bourse\n\n"
+        "🎓 Bourse\n"
+        "💰 Stage rémunéré\n\n"
+
         "Cliquez ci-dessous et indiquez "
         "ce que vous recherchez."
     )
@@ -1377,14 +1281,17 @@ async def publier_bot(
 
         await context.bot.send_message(
             chat_id=CHANNEL_ID,
+
             text=texte,
+
             parse_mode=ParseMode.HTML,
+
             reply_markup=InlineKeyboardMarkup(
                 [
                     [
                         InlineKeyboardButton(
                             "🤖 DEMANDER UNE OFFRE",
-                            url=bot_link("demande"),
+                            url=bot_link(),
                         )
                     ]
                 ]
@@ -1402,54 +1309,7 @@ async def publier_bot(
         )
 
         await update.message.reply_text(
-            "⚠️ Le message n'a pas pu être publié."
-        )
-
-
-# ============================================================
-# PUBLICATION AUTOMATIQUE
-# ============================================================
-
-async def hourly_post(
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    texte = (
-        "🤖 <b>BOT OPPORTUNITÉS</b>\n\n"
-        "Vous recherchez :\n\n"
-        "💼 Emploi\n"
-        "🎓 Stage\n"
-        "🎓 Bourse\n\n"
-        "Cliquez ci-dessous pour rechercher "
-        "une opportunité."
-    )
-
-    try:
-
-        await context.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=texte,
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🤖 DEMANDER UNE OFFRE",
-                            url=bot_link("demande"),
-                        )
-                    ]
-                ]
-            ),
-        )
-
-        logger.info(
-            "Publication automatique effectuée."
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Publication automatique"
+            "⚠️ Publication impossible."
         )
 
 
@@ -1458,14 +1318,15 @@ async def hourly_post(
 # ============================================================
 
 async def stats(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context,
 ):
 
     if update.message is None:
+
         return
 
-    if not admin(update):
+    if not is_admin(update):
 
         await update.message.reply_text(
             "⛔ Accès réservé à l'administrateur."
@@ -1489,14 +1350,6 @@ async def stats(
             """
         ).fetchone()[0]
 
-        stages = conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM offres
-            WHERE categorie = 'STAGE'
-            """
-        ).fetchone()[0]
-
         bourses = conn.execute(
             """
             SELECT COUNT(*)
@@ -1505,14 +1358,26 @@ async def stats(
             """
         ).fetchone()[0]
 
+        stages = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM offres
+            WHERE categorie = 'STAGE RÉMUNÉRÉ'
+            """
+        ).fetchone()[0]
+
         conn.close()
 
     await update.message.reply_text(
         "📊 <b>STATISTIQUES</b>\n\n"
+
         f"📚 Total : <b>{total}</b>\n"
+
         f"💼 Emplois : <b>{emplois}</b>\n"
-        f"🎓 Stages : <b>{stages}</b>\n"
-        f"🎓 Bourses : <b>{bourses}</b>",
+
+        f"🎓 Bourses : <b>{bourses}</b>\n"
+
+        f"💰 Stages rémunérés : <b>{stages}</b>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -1522,11 +1387,11 @@ async def stats(
 # ============================================================
 
 async def error_handler(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context,
 ):
 
-    logger.exception(
+    logger.error(
         "Erreur Telegram : %s",
         context.error,
     )
@@ -1538,18 +1403,25 @@ async def error_handler(
 
 def main():
 
+    # Base de données
     init_db()
 
+    # Serveur Render
     threading.Thread(
         target=run_flask,
         daemon=True,
     ).start()
 
+    # Application Telegram
     application = (
         Application.builder()
         .token(BOT_TOKEN)
         .build()
     )
+
+    # --------------------------------------------------------
+    # COMMANDES
+    # --------------------------------------------------------
 
     application.add_handler(
         CommandHandler(
@@ -1593,32 +1465,38 @@ def main():
         )
     )
 
-    application.add_handler(
-        CallbackQueryHandler(
-            candidature_callback,
-            pattern=r"^CANDIDATER:\d+$",
-        )
-    )
+    # --------------------------------------------------------
+    # BOUTONS
+    # --------------------------------------------------------
 
     application.add_handler(
         CallbackQueryHandler(
             category_callback,
-            pattern=r"^(EMPLOI|STAGE|BOURSE)$",
+            pattern=r"^(EMPLOI|BOURSE|STAGE)$",
         )
     )
 
+    # --------------------------------------------------------
+    # SYNCHRONISATION AUTOMATIQUE DU CANAL
+    # --------------------------------------------------------
+
     application.add_handler(
-        PreCheckoutQueryHandler(
-            precheckout_callback
+        MessageHandler(
+            filters.UpdateType.CHANNEL_POST,
+            canal_post_automatique,
         )
     )
 
     application.add_handler(
         MessageHandler(
-            filters.SUCCESSFUL_PAYMENT,
-            successful_payment_callback,
+            filters.UpdateType.EDITED_CHANNEL_POST,
+            canal_post_automatique,
         )
     )
+
+    # --------------------------------------------------------
+    # RECHERCHE DES UTILISATEURS
+    # --------------------------------------------------------
 
     application.add_handler(
         MessageHandler(
@@ -1627,31 +1505,38 @@ def main():
         )
     )
 
-    if application.job_queue:
-
-        application.job_queue.run_repeating(
-            hourly_post,
-            interval=3600,
-            first=3600,
-        )
-
-        logger.info(
-            "Publication automatique activée."
-        )
-
-    else:
-
-        logger.warning(
-            "JobQueue absente : publication automatique désactivée."
-        )
+    # --------------------------------------------------------
+    # GESTION DES ERREURS
+    # --------------------------------------------------------
 
     application.add_error_handler(
         error_handler
     )
 
     logger.info(
-        "BOT OPPORTUNITÉS DÉMARRÉ."
+        "=========================================="
     )
+
+    logger.info(
+        "🤖 BOT OPPORTUNITÉS DÉMARRÉ"
+    )
+
+    logger.info(
+        "📢 Canal : @%s",
+        CHANNEL_USERNAME,
+    )
+
+    logger.info(
+        "🔄 Synchronisation automatique activée"
+    )
+
+    logger.info(
+        "=========================================="
+    )
+
+    # --------------------------------------------------------
+    # POLLING
+    # --------------------------------------------------------
 
     application.run_polling(
         allowed_updates=Update.ALL_TYPES
@@ -1663,4 +1548,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
