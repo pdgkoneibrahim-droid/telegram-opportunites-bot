@@ -1,8 +1,8 @@
 import os
 import sqlite3
-import asyncio
 import threading
 import logging
+import html
 from functools import wraps
 
 import requests
@@ -42,17 +42,32 @@ app.secret_key = os.environ.get(
     "change-this-secret-key"
 )
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+BOT_TOKEN = os.environ.get(
+    "BOT_TOKEN",
+    ""
+).strip()
 
 CHANNEL_ID = os.environ.get(
     "CHANNEL_ID",
     "@canalRM24"
 ).strip()
 
+# ============================================================
+# ADMIN TELEGRAM
+# ============================================================
+# TON TELEGRAM ID
+# 5056571209
+#
+# Si ADMIN_TELEGRAM_ID existe dans Render, il est utilisé.
+# Sinon 5056571209 est automatiquement utilisé.
+# ============================================================
+
 ADMIN_TELEGRAM_ID = os.environ.get(
     "ADMIN_TELEGRAM_ID",
-    ""
+    "5056571209"
 ).strip()
+
+ADMIN_ID = 5056571209
 
 ADZUNA_APP_ID = os.environ.get(
     "ADZUNA_APP_ID",
@@ -69,7 +84,10 @@ ADMIN_KEY = os.environ.get(
     ""
 ).strip()
 
-DB_FILE = "opportunites.db"
+DB_FILE = os.environ.get(
+    "DB_FILE",
+    "opportunites.db"
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -84,24 +102,200 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 COUNTRIES = {
-    "fr": "France",
-    "gb": "Royaume-Uni",
-    "ca": "Canada",
-    "us": "États-Unis",
-    "de": "Allemagne",
+    "af": "Afghanistan",
+    "al": "Albanie",
+    "dz": "Algérie",
+    "ad": "Andorre",
+    "ao": "Angola",
+    "ag": "Antigua-et-Barbuda",
+    "ar": "Argentine",
+    "am": "Arménie",
     "au": "Australie",
-    "be": "Belgique",
-    "ch": "Suisse",
-    "it": "Italie",
-    "es": "Espagne",
-    "nl": "Pays-Bas",
-    "ie": "Irlande",
     "at": "Autriche",
-    "pl": "Pologne",
-    "za": "Afrique du Sud",
-    "in": "Inde",
+    "az": "Azerbaïdjan",
+    "bs": "Bahamas",
+    "bh": "Bahreïn",
+    "bd": "Bangladesh",
+    "bb": "Barbade",
+    "by": "Biélorussie",
+    "be": "Belgique",
+    "bz": "Belize",
+    "bj": "Bénin",
+    "bt": "Bhoutan",
+    "bo": "Bolivie",
+    "ba": "Bosnie-Herzégovine",
+    "bw": "Botswana",
     "br": "Brésil",
+    "bn": "Brunei",
+    "bg": "Bulgarie",
+    "bf": "Burkina Faso",
+    "bi": "Burundi",
+    "cv": "Cap-Vert",
+    "kh": "Cambodge",
+    "cm": "Cameroun",
+    "ca": "Canada",
+    "cf": "République centrafricaine",
+    "td": "Tchad",
+    "cl": "Chili",
+    "cn": "Chine",
+    "co": "Colombie",
+    "km": "Comores",
+    "cg": "Congo",
+    "cd": "République démocratique du Congo",
+    "cr": "Costa Rica",
+    "ci": "Côte d'Ivoire",
+    "hr": "Croatie",
+    "cu": "Cuba",
+    "cy": "Chypre",
+    "cz": "Tchéquie",
+    "dk": "Danemark",
+    "dj": "Djibouti",
+    "dm": "Dominique",
+    "do": "République dominicaine",
+    "ec": "Équateur",
+    "eg": "Égypte",
+    "sv": "Salvador",
+    "gq": "Guinée équatoriale",
+    "er": "Érythrée",
+    "ee": "Estonie",
+    "sz": "Eswatini",
+    "et": "Éthiopie",
+    "fj": "Fidji",
+    "fi": "Finlande",
+    "fr": "France",
+    "ga": "Gabon",
+    "gm": "Gambie",
+    "ge": "Géorgie",
+    "de": "Allemagne",
+    "gh": "Ghana",
+    "gr": "Grèce",
+    "gd": "Grenade",
+    "gt": "Guatemala",
+    "gn": "Guinée",
+    "gw": "Guinée-Bissau",
+    "gy": "Guyana",
+    "ht": "Haïti",
+    "hn": "Honduras",
+    "hu": "Hongrie",
+    "is": "Islande",
+    "in": "Inde",
+    "id": "Indonésie",
+    "ir": "Iran",
+    "iq": "Irak",
+    "ie": "Irlande",
+    "il": "Israël",
+    "it": "Italie",
+    "jm": "Jamaïque",
+    "jp": "Japon",
+    "jo": "Jordanie",
+    "kz": "Kazakhstan",
+    "ke": "Kenya",
+    "ki": "Kiribati",
+    "kp": "Corée du Nord",
+    "kr": "Corée du Sud",
+    "kw": "Koweït",
+    "kg": "Kirghizistan",
+    "la": "Laos",
+    "lv": "Lettonie",
+    "lb": "Liban",
+    "ls": "Lesotho",
+    "lr": "Libéria",
+    "ly": "Libye",
+    "li": "Liechtenstein",
+    "lt": "Lituanie",
+    "lu": "Luxembourg",
+    "mg": "Madagascar",
+    "mw": "Malawi",
+    "my": "Malaisie",
+    "mv": "Maldives",
+    "ml": "Mali",
+    "mt": "Malte",
+    "mh": "Îles Marshall",
+    "mr": "Mauritanie",
+    "mu": "Maurice",
     "mx": "Mexique",
+    "fm": "Micronésie",
+    "md": "Moldavie",
+    "mc": "Monaco",
+    "mn": "Mongolie",
+    "me": "Monténégro",
+    "ma": "Maroc",
+    "mz": "Mozambique",
+    "mm": "Myanmar",
+    "na": "Namibie",
+    "nr": "Nauru",
+    "np": "Népal",
+    "nl": "Pays-Bas",
+    "nz": "Nouvelle-Zélande",
+    "ni": "Nicaragua",
+    "ne": "Niger",
+    "ng": "Nigeria",
+    "mk": "Macédoine du Nord",
+    "no": "Norvège",
+    "om": "Oman",
+    "pk": "Pakistan",
+    "pw": "Palaos",
+    "pa": "Panama",
+    "pg": "Papouasie-Nouvelle-Guinée",
+    "py": "Paraguay",
+    "pe": "Pérou",
+    "ph": "Philippines",
+    "pl": "Pologne",
+    "pt": "Portugal",
+    "qa": "Qatar",
+    "ro": "Roumanie",
+    "ru": "Russie",
+    "rw": "Rwanda",
+    "kn": "Saint-Christophe-et-Niévès",
+    "lc": "Sainte-Lucie",
+    "vc": "Saint-Vincent-et-les-Grenadines",
+    "ws": "Samoa",
+    "sm": "Saint-Marin",
+    "st": "Sao Tomé-et-Principe",
+    "sa": "Arabie saoudite",
+    "sn": "Sénégal",
+    "rs": "Serbie",
+    "sc": "Seychelles",
+    "sl": "Sierra Leone",
+    "sg": "Singapour",
+    "sk": "Slovaquie",
+    "si": "Slovénie",
+    "sb": "Îles Salomon",
+    "so": "Somalie",
+    "za": "Afrique du Sud",
+    "ss": "Soudan du Sud",
+    "es": "Espagne",
+    "lk": "Sri Lanka",
+    "sd": "Soudan",
+    "sr": "Suriname",
+    "se": "Suède",
+    "ch": "Suisse",
+    "sy": "Syrie",
+    "tj": "Tadjikistan",
+    "tz": "Tanzanie",
+    "th": "Thaïlande",
+    "tl": "Timor oriental",
+    "tg": "Togo",
+    "to": "Tonga",
+    "tt": "Trinité-et-Tobago",
+    "tn": "Tunisie",
+    "tr": "Turquie",
+    "tm": "Turkménistan",
+    "tv": "Tuvalu",
+    "ug": "Ouganda",
+    "ua": "Ukraine",
+    "ae": "Émirats arabes unis",
+    "gb": "Royaume-Uni",
+    "us": "États-Unis",
+    "uy": "Uruguay",
+    "uz": "Ouzbékistan",
+    "vu": "Vanuatu",
+    "va": "Vatican",
+    "ve": "Venezuela",
+    "vn": "Vietnam",
+    "ye": "Yémen",
+    "zm": "Zambie",
+    "zw": "Zimbabwe",
 }
 
 CATEGORIES = {
@@ -128,6 +322,7 @@ def db():
 
 
 def init_db():
+
     connection = db()
 
     connection.execute("""
@@ -179,15 +374,18 @@ init_db()
 
 
 # ============================================================
-# UTILITAIRES ADMIN WEB
+# ADMIN WEB
 # ============================================================
 
 def admin_required(function):
+
     @wraps(function)
     def wrapper(*args, **kwargs):
 
         if not session.get("admin"):
-            return redirect(url_for("admin_login"))
+            return redirect(
+                url_for("admin_login")
+            )
 
         return function(*args, **kwargs)
 
@@ -195,7 +393,7 @@ def admin_required(function):
 
 
 # ============================================================
-# UTILITAIRES ADMIN TELEGRAM
+# ADMIN TELEGRAM
 # ============================================================
 
 def is_telegram_admin(update: Update) -> bool:
@@ -203,16 +401,23 @@ def is_telegram_admin(update: Update) -> bool:
     if not update.effective_user:
         return False
 
-    if not ADMIN_TELEGRAM_ID:
-        return False
-
     try:
-        return (
-            str(update.effective_user.id)
-            == str(ADMIN_TELEGRAM_ID)
+
+        user_id = int(
+            update.effective_user.id
         )
 
-    except Exception:
+        configured_id = int(
+            ADMIN_TELEGRAM_ID
+        )
+
+        return (
+            user_id == ADMIN_ID
+            or user_id == configured_id
+        )
+
+    except (ValueError, TypeError):
+
         return False
 
 
@@ -226,14 +431,15 @@ async def telegram_admin_required(
     if update.message:
 
         await update.message.reply_text(
-            "❌ Commande réservée à l'administrateur."
+            "❌ Cette commande est réservée "
+            "à l'administrateur."
         )
 
     return False
 
 
 # ============================================================
-# ENREGISTREMENT UTILISATEURS TELEGRAM
+# UTILISATEURS
 # ============================================================
 
 def enregistrer_utilisateur(user):
@@ -283,7 +489,10 @@ def is_paid_internship(
 
     text = (text or "").lower()
 
-    if salary_min is not None or salary_max is not None:
+    if salary_min is not None:
+        return True
+
+    if salary_max is not None:
         return True
 
     words = (
@@ -315,7 +524,10 @@ def rechercher_adzuna(
     remunerated=False
 ):
 
-    if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
+    if not ADZUNA_APP_ID:
+        return []
+
+    if not ADZUNA_APP_KEY:
         return []
 
     params = {
@@ -355,7 +567,9 @@ def rechercher_adzuna(
 
     response.raise_for_status()
 
-    return response.json().get(
+    data = response.json()
+
+    return data.get(
         "results",
         []
     )
@@ -471,6 +685,7 @@ def enregistrer_offres(
                     "paid",
                 )
             ):
+
                 categorie_finale = (
                     "Stage rémunéré"
                 )
@@ -617,12 +832,10 @@ async def envoyer_menu(
 
 
 # ============================================================
-# PUBLICATION MENU CANAL
+# PUBLICATION CANAL
 # ============================================================
 
-async def publier_menu_canal(
-    bot
-):
+async def publier_menu_canal(bot):
 
     try:
 
@@ -665,7 +878,7 @@ async def menu_toutes_les_2_heures(
 
 
 # ============================================================
-# /START
+# START
 # ============================================================
 
 async def start_command(
@@ -687,7 +900,7 @@ async def start_command(
 
 
 # ============================================================
-# /MENU
+# MENU
 # ============================================================
 
 async def menu_command(
@@ -705,7 +918,7 @@ async def menu_command(
 
 
 # ============================================================
-# /ID
+# ID
 # ============================================================
 
 async def id_command(
@@ -723,7 +936,7 @@ async def id_command(
 
 
 # ============================================================
-# /TESTCANAL
+# TEST CANAL
 # ============================================================
 
 async def testcanal_command(
@@ -731,9 +944,7 @@ async def testcanal_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    if not await telegram_admin_required(
-        update
-    ):
+    if not await telegram_admin_required(update):
         return
 
     try:
@@ -743,7 +954,7 @@ async def testcanal_command(
             text=(
                 "🧪 <b>TEST RÉUSSI</b>\n\n"
                 "Le bot peut publier dans "
-                "le canal <b>@canalRM24</b>."
+                "<b>@canalRM24</b>."
             ),
             parse_mode=ParseMode.HTML,
         )
@@ -773,7 +984,7 @@ async def testcanal_command(
 
 
 # ============================================================
-# /AJOUTER
+# AJOUTER UNE OFFRE
 # ============================================================
 
 async def ajouter_command(
@@ -781,9 +992,7 @@ async def ajouter_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    if not await telegram_admin_required(
-        update
-    ):
+    if not await telegram_admin_required(update):
         return
 
     texte = (
@@ -804,14 +1013,9 @@ async def ajouter_command(
 
         await update.message.reply_text(
             "❌ Format incorrect.\n\n"
-            "Utilise :\n"
+            "Utilise :\n\n"
             "/ajouter CATEGORIE | TITRE | "
-            "DESCRIPTION | LIEN\n\n"
-            "Exemple :\n"
-            "/ajouter STAGE | "
-            "Bourse Oxford | "
-            "Entièrement financée au Royaume-Uni | "
-            "https://example.com"
+            "DESCRIPTION | LIEN"
         )
 
         return
@@ -851,12 +1055,28 @@ async def ajouter_command(
     connection.commit()
     connection.close()
 
+    categorie_html = html.escape(
+        categorie
+    )
+
+    titre_html = html.escape(
+        titre
+    )
+
+    description_html = html.escape(
+        description
+    )
+
+    lien_html = html.escape(
+        lien
+    )
+
     texte_canal = (
         "🌍 <b>RESEAU MONDIAL</b>\n\n"
-        f"📂 <b>{categorie.upper()}</b>\n\n"
-        f"📌 <b>{titre}</b>\n\n"
-        f"{description}\n\n"
-        f"🔗 {lien}\n\n"
+        f"📂 <b>{categorie_html.upper()}</b>\n\n"
+        f"📌 <b>{titre_html}</b>\n\n"
+        f"{description_html}\n\n"
+        f"🔗 {lien_html}\n\n"
         f"🆔 Référence : {offre_id}"
     )
 
@@ -885,12 +1105,9 @@ async def ajouter_command(
 
         await update.message.reply_text(
             "✅ <b>OFFRE PUBLIÉE</b>\n\n"
-            f"📂 {categorie}\n"
-            f"📌 {titre}\n"
-            f"🆔 Référence : {offre_id}\n\n"
-            "📢 Elle est maintenant disponible "
-            "dans le canal et dans la recherche "
-            "du bot.",
+            f"📂 {categorie_html}\n"
+            f"📌 {titre_html}\n"
+            f"🆔 Référence : {offre_id}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -909,7 +1126,7 @@ async def ajouter_command(
 
 
 # ============================================================
-# ENVOI DIRECT DES MESSAGES ADMIN AU CANAL
+# PUBLICATION MESSAGE ADMIN
 # ============================================================
 
 async def publier_message_admin(
@@ -921,14 +1138,6 @@ async def publier_message_admin(
         return
 
     if not is_telegram_admin(update):
-
-        # Les autres utilisateurs peuvent
-        # utiliser le bot pour rechercher.
-        await rechercher_demande(
-            update,
-            context
-        )
-
         return
 
     texte = (
@@ -951,14 +1160,10 @@ async def publier_message_admin(
             "✅ Message publié dans le canal."
         )
 
-        logger.info(
-            "Message admin publié dans le canal."
-        )
-
     except Exception as error:
 
         logger.exception(
-            "Erreur publication message admin : %s",
+            "Erreur publication admin : %s",
             error
         )
 
@@ -969,7 +1174,7 @@ async def publier_message_admin(
 
 
 # ============================================================
-# RECHERCHE DES OFFRES TELEGRAM
+# RECHERCHE OFFRES TELEGRAM
 # ============================================================
 
 def rechercher_offres_telegram(
@@ -1037,29 +1242,46 @@ async def envoyer_offres_telegram(
         await update.message.reply_text(
             "😔 Aucune offre correspondante "
             "n'a été trouvée pour le moment.\n\n"
-            "📢 Consulte également notre canal :\n"
-            "https://t.me/canalRM24"
+            "📢 https://t.me/canalRM24"
         )
 
         return
 
-    texte = f"{titre}\n\n"
+    texte = (
+        f"<b>{html.escape(titre)}</b>\n\n"
+    )
 
     for offre in offres:
 
-        texte += (
-            f"📌 <b>{offre['titre']}</b>\n"
-            f"📂 {offre['categorie']}\n"
+        titre_html = html.escape(
+            offre["titre"] or ""
         )
 
-        if offre["description"]:
+        categorie_html = html.escape(
+            offre["categorie"] or ""
+        )
+
+        description_html = html.escape(
+            offre["description"] or ""
+        )
+
+        lien_html = html.escape(
+            offre["lien"] or ""
+        )
+
+        texte += (
+            f"📌 <b>{titre_html}</b>\n"
+            f"📂 {categorie_html}\n"
+        )
+
+        if description_html:
             texte += (
-                f"📝 {offre['description'][:500]}\n"
+                f"📝 {description_html[:500]}\n"
             )
 
-        if offre["lien"]:
+        if lien_html:
             texte += (
-                f"🔗 {offre['lien']}\n"
+                f"🔗 {lien_html}\n"
             )
 
         texte += (
@@ -1075,7 +1297,7 @@ async def envoyer_offres_telegram(
 
 
 # ============================================================
-# DEMANDE D'OFFRE
+# DEMANDER UNE OFFRE
 # ============================================================
 
 async def demander_offre_callback(
@@ -1099,15 +1321,13 @@ async def demander_offre_callback(
         "• stage en Belgique\n"
         "• bourse au Canada\n"
         "• emploi en France\n"
-        "• stage rémunéré\n\n"
-        "🔎 Le bot recherchera les offres "
-        "correspondantes.",
+        "• stage rémunéré",
         parse_mode=ParseMode.HTML,
     )
 
 
 # ============================================================
-# CALLBACK CATÉGORIES
+# CATÉGORIES
 # ============================================================
 
 async def categorie_callback(
@@ -1151,27 +1371,41 @@ async def categorie_callback(
             f"{titre}\n\n"
             "😔 Aucune offre n'est encore "
             "enregistrée dans cette catégorie.\n\n"
-            "📢 Consulte le canal :\n"
-            "https://t.me/canalRM24"
+            "📢 https://t.me/canalRM24"
         )
 
         return
 
     texte = (
-        f"<b>{titre}</b>\n\n"
+        f"<b>{html.escape(titre)}</b>\n\n"
     )
 
     for offre in offres:
 
-        texte += (
-            f"📌 <b>{offre['titre']}</b>\n"
-            f"📝 {offre['description'][:400]}\n"
+        titre_html = html.escape(
+            offre["titre"] or ""
         )
 
-        if offre["lien"]:
+        description_html = html.escape(
+            offre["description"] or ""
+        )
 
+        lien_html = html.escape(
+            offre["lien"] or ""
+        )
+
+        texte += (
+            f"📌 <b>{titre_html}</b>\n"
+        )
+
+        if description_html:
             texte += (
-                f"🔗 {offre['lien']}\n"
+                f"📝 {description_html[:400]}\n"
+            )
+
+        if lien_html:
+            texte += (
+                f"🔗 {lien_html}\n"
             )
 
         texte += (
@@ -1210,6 +1444,15 @@ async def rechercher_demande(
         update.effective_user
     )
 
+    # --------------------------------------------------------
+    # Si l'utilisateur vient du bouton
+    # "DEMANDER UNE OFFRE"
+    # --------------------------------------------------------
+
+    context.user_data[
+        "attente_recherche"
+    ] = False
+
     offres = rechercher_offres_telegram(
         texte,
         limite=10
@@ -1224,33 +1467,62 @@ async def rechercher_demande(
 
         return
 
-    # Recherche Adzuna si aucune offre locale
+    # --------------------------------------------------------
+    # Recherche Adzuna
+    # --------------------------------------------------------
+
     if ADZUNA_APP_ID and ADZUNA_APP_KEY:
 
         try:
 
+            country = "ca"
+
+            remunerated = any(
+                word in texte.lower()
+                for word in (
+                    "stage rémunéré",
+                    "stage remunere",
+                    "paid internship",
+                    "paid intern",
+                    "internship paid",
+                )
+            )
+
             offres_api = rechercher_adzuna(
-                country="ca",
+                country=country,
                 keyword=texte,
                 page=1,
-                remunerated=False,
+                remunerated=remunerated,
             )
 
             if offres_api:
 
+                categorie = (
+                    "Stage rémunéré"
+                    if remunerated
+                    else "Emploi"
+                )
+
                 enregistrer_offres(
                     offres_api,
-                    "ca",
-                    "Emploi"
+                    country,
+                    categorie
+                )
+
+                texte_reponse = (
+                    "🔎 <b>OFFRES TROUVÉES</b>\n\n"
+                    f"J'ai trouvé "
+                    f"<b>{len(offres_api)}</b> "
+                    "offre(s) correspondant "
+                    "à ta recherche.\n\n"
+                    "🌍 Les résultats sont également "
+                    "consultables sur notre site."
                 )
 
                 await update.message.reply_text(
-                    "🔎 J'ai trouvé des offres "
-                    "correspondantes sur notre "
-                    "source internationale.\n\n"
-                    "🌐 Consulte le site :\n"
-                    "https://telegram-opportunites-bot."
-                    "onrender.com"
+                    texte_reponse,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
                 )
 
                 return
@@ -1266,16 +1538,18 @@ async def rechercher_demande(
         "🔎 Je n'ai pas trouvé d'offre "
         "correspondante pour le moment.\n\n"
         "Essaie avec d'autres mots-clés.\n\n"
-        "Exemple :\n"
+        "Exemples :\n"
         "💼 ingénieur\n"
+        "💼 informatique\n"
         "🎓 bourse Canada\n"
-        "🎓 stage Belgique\n\n"
+        "🎓 stage Belgique\n"
+        "💰 stage rémunéré\n\n"
         "📢 Canal : https://t.me/canalRM24"
     )
 
 
 # ============================================================
-# /STATS
+# STATS
 # ============================================================
 
 async def stats_command(
@@ -1283,33 +1557,40 @@ async def stats_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    if not await telegram_admin_required(
-        update
-    ):
+    if not await telegram_admin_required(update):
         return
 
     connection = db()
 
     offres = connection.execute(
-        "SELECT COUNT(*) AS total FROM telegram_offres"
+        "SELECT COUNT(*) AS total "
+        "FROM telegram_offres"
     ).fetchone()["total"]
 
     utilisateurs = connection.execute(
-        "SELECT COUNT(*) AS total FROM utilisateurs"
+        "SELECT COUNT(*) AS total "
+        "FROM utilisateurs"
+    ).fetchone()["total"]
+
+    offres_api = connection.execute(
+        "SELECT COUNT(*) AS total "
+        "FROM offres"
     ).fetchone()["total"]
 
     connection.close()
 
     await update.message.reply_text(
         "📊 <b>STATISTIQUES</b>\n\n"
-        f"📌 Offres : {offres}\n"
-        f"👥 Utilisateurs : {utilisateurs}",
+        f"📌 Offres Telegram : {offres}\n"
+        f"🌐 Offres API : {offres_api}\n"
+        f"👥 Utilisateurs : {utilisateurs}\n\n"
+        f"🆔 Admin : {ADMIN_ID}",
         parse_mode=ParseMode.HTML,
     )
 
 
 # ============================================================
-# GESTION ERREURS TELEGRAM
+# ERREURS
 # ============================================================
 
 async def telegram_error_handler(
@@ -1317,14 +1598,59 @@ async def telegram_error_handler(
     context
 ):
 
-    logger.exception(
+    logger.error(
         "Erreur Telegram : %s",
-        context.error
+        context.error,
+        exc_info=True
     )
 
 
 # ============================================================
-# DÉMARRAGE DU BOT
+# HANDLER TEXTE CENTRAL
+# ============================================================
+
+async def message_texte_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
+
+    texte = (
+        update.message.text
+        or ""
+    ).strip()
+
+    if not texte:
+        return
+
+    # --------------------------------------------------------
+    # ADMIN
+    # Tout texte envoyé par l'admin est publié dans le canal.
+    # --------------------------------------------------------
+
+    if is_telegram_admin(update):
+
+        await publier_message_admin(
+            update,
+            context
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # UTILISATEUR
+    # --------------------------------------------------------
+
+    await rechercher_demande(
+        update,
+        context
+    )
+
+
+# ============================================================
+# BOT TELEGRAM
 # ============================================================
 
 telegram_application = None
@@ -1339,7 +1665,7 @@ def lancer_bot_telegram():
 
         logger.warning(
             "BOT_TOKEN absent. "
-            "Le bot Telegram ne sera pas lancé."
+            "Bot Telegram non lancé."
         )
 
         return
@@ -1423,8 +1749,7 @@ def lancer_bot_telegram():
 
         telegram_application.add_handler(
             MessageHandler(
-                filters.TEXT
-                & ~filters.COMMAND,
+                filters.TEXT & ~filters.COMMAND,
                 message_texte_handler
             )
         )
@@ -1434,7 +1759,7 @@ def lancer_bot_telegram():
         )
 
         # ----------------------------------------------------
-        # MENU AUTOMATIQUE TOUTES LES 2 HEURES
+        # PUBLICATION TOUTES LES 2 HEURES
         # ----------------------------------------------------
 
         if telegram_application.job_queue:
@@ -1455,11 +1780,11 @@ def lancer_bot_telegram():
 
             logger.error(
                 "JobQueue indisponible. "
-                "Vérifie python-telegram-bot[job-queue]."
+                "Installe python-telegram-bot[job-queue]."
             )
 
         logger.info(
-            "Démarrage du bot Telegram..."
+            "Bot Telegram démarrage..."
         )
 
         telegram_application.run_polling(
@@ -1503,53 +1828,7 @@ def demarrer_bot_en_arriere_plan():
 
 
 # ============================================================
-# HANDLER TEXTE CENTRAL
-# ============================================================
-
-async def message_texte_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not update.message:
-        return
-
-    texte = (
-        update.message.text
-        or ""
-    ).strip()
-
-    if not texte:
-        return
-
-    # --------------------------------------------------------
-    # ADMIN
-    # Tout message texte de l'admin est publié directement
-    # dans le canal.
-    # --------------------------------------------------------
-
-    if is_telegram_admin(update):
-
-        await publier_message_admin(
-            update,
-            context
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # UTILISATEUR
-    # Recherche d'une offre
-    # --------------------------------------------------------
-
-    await rechercher_demande(
-        update,
-        context
-    )
-
-
-# ============================================================
-# SITE WEB - ACCUEIL
+# SITE WEB
 # ============================================================
 
 @app.route("/")
@@ -1569,8 +1848,6 @@ def accueil():
         "categorie",
         "emploi"
     ).strip()
-
-    offres = []
 
     recherche = (
         request.args.get("search")
@@ -1618,7 +1895,6 @@ def accueil():
             SELECT *
             FROM offres
             WHERE categorie = 'Emploi'
-               OR categorie IS NULL
             ORDER BY id DESC
             LIMIT 100
         """
@@ -1628,8 +1904,7 @@ def accueil():
         query = """
             SELECT *
             FROM offres
-            WHERE lower(categorie) IN
-            ('bourse', 'bourses')
+            WHERE lower(categorie) = 'bourse'
             ORDER BY id DESC
             LIMIT 100
         """
@@ -1649,13 +1924,6 @@ def accueil():
         query = """
             SELECT *
             FROM offres
-            WHERE categorie IN
-            (
-                'Emploi',
-                'Bourse',
-                'Bourses',
-                'Stage rémunéré'
-            )
             ORDER BY id DESC
             LIMIT 100
         """
@@ -1677,7 +1945,7 @@ def accueil():
 
 
 # ============================================================
-# ADMIN WEB
+# ADMIN LOGIN
 # ============================================================
 
 @app.route(
@@ -1864,7 +2132,7 @@ def health():
 
 
 # ============================================================
-# HTML DU SITE
+# HTML ACCUEIL
 # ============================================================
 
 HTML_HOME = """
@@ -1960,8 +2228,7 @@ a {
 </p>
 
 <p>
-Trouvez des opportunités internationales
-et locales selon les offres disponibles.
+Trouvez des opportunités internationales.
 </p>
 
 <p>
@@ -2103,7 +2370,7 @@ rel="noopener noreferrer"
 <div class="card">
 
 <h2>
-🔎 Aucune offre enregistrée pour cette recherche.
+🔎 Aucune offre enregistrée.
 </h2>
 
 <p>
@@ -2122,6 +2389,10 @@ les offres disponibles.
 </html>
 """
 
+
+# ============================================================
+# HTML LOGIN
+# ============================================================
 
 HTML_LOGIN = """
 <!doctype html>
@@ -2203,6 +2474,10 @@ required
 </html>
 """
 
+
+# ============================================================
+# HTML ADMIN
+# ============================================================
 
 HTML_ADMIN = """
 <!doctype html>
@@ -2345,6 +2620,10 @@ type="submit"
 </html>
 """
 
+
+# ============================================================
+# HTML MODIFICATION
+# ============================================================
 
 HTML_EDIT = """
 <!doctype html>
@@ -2509,7 +2788,7 @@ value="{{ offre["lien"] or "" }}"
 
 
 # ============================================================
-# LANCEMENT FLASK + BOT
+# DÉMARRAGE
 # ============================================================
 
 demarrer_bot_en_arriere_plan()
